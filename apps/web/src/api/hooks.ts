@@ -211,6 +211,43 @@ export function useSubmitListeningAttempt() {
   });
 }
 
+export interface ListeningQuestion {
+  type: "MULTIPLE_CHOICE" | "TRUE_FALSE" | "FILL_BLANK" | "SHORT_ANSWER";
+  skill: string;
+  prompt: string;
+  options: string[];
+  answer: string;
+}
+
+export interface ListeningExercise {
+  transcript: string;
+  translation?: string;
+  questions?: ListeningQuestion[];
+}
+
+// ---------- AI listening-exercise generator (custom Listening practice builder) ----------
+export function useGenerateListeningExercise() {
+  return useMutation({
+    mutationFn: async (payload: {
+      topic: string;
+      cefrLevel: string;
+      paragraphs: number;
+      length: string;
+      assessmentSkills: string[];
+      testMode: "TRANSLATION" | "QUESTIONS";
+      questionTypes: string[];
+      numQuestions: number;
+      targetLang: string;
+    }) =>
+      (
+        await api.post<{ source: string; exercise: ListeningExercise | null; note?: string }>(
+          "/listening/generate-exercise",
+          payload
+        )
+      ).data,
+  });
+}
+
 // ---------- Reading ----------
 export function useArticles(category?: string) {
   return useQuery({

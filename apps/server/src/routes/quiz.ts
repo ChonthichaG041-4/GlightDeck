@@ -54,7 +54,7 @@ router.get("/generate", async (req, res) => {
       ];
       break;
     }
-    case "TYPING": {
+    case "MEANING": {
       questions = chosen.map((word) => ({ wordId: word.id, prompt: word.meaning, answer: word.headword }));
       break;
     }
