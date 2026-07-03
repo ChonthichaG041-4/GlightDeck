@@ -110,11 +110,11 @@ export function useCreateTag() {
 }
 
 // ---------- Flashcards / SRS ----------
-export function useFlashcardQueue(limit = 20, collectionId?: string) {
+export function useFlashcardQueue(limit = 20, collectionId?: string, wordIds?: string) {
   return useQuery({
-    queryKey: ["flashcards", "queue", limit, collectionId],
+    queryKey: ["flashcards", "queue", limit, collectionId, wordIds],
     queryFn: async () =>
-      (await api.get<{ dueCount: number; newCount: number; cards: Word[] }>("/flashcards/queue", { params: { limit, collectionId } })).data,
+      (await api.get<{ dueCount: number; newCount: number; cards: Word[] }>("/flashcards/queue", { params: { limit, collectionId, wordIds } })).data,
   });
 }
 
@@ -134,6 +134,49 @@ export function useWordLookup() {
   });
 }
 
+export interface GeneratedWordItem {
+  headword: string;
+  ipa: string | null;
+  type: string;
+  level: string | null;
+  example: string | null;
+  translations: Record<string, string>;
+}
+
+// ---------- AI vocabulary-set generator ----------
+export function useGenerateWordSet() {
+  return useMutation({
+    mutationFn: async (payload: {
+      topic: string;
+      sourceLang: string;
+      targetLangs: string[];
+      cefrLevel: string;
+      style: string;
+      scope: string;
+      count: number;
+    }) =>
+      (
+        await api.post<{ source: string; words: GeneratedWordItem[]; note?: string }>("/ai/generate-set", payload)
+      ).data,
+  });
+}
+
+export function useBulkCreateWords() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      sourceLang: string;
+      collectionId?: string;
+      newCollectionName?: string;
+      words: Array<{ headword: string; ipa?: string | null; type: string; level: string; example?: string | null; translations: Record<string, string> }>;
+    }) => (await api.post<{ imported: number; collectionId: string | null }>("/words/bulk", payload)).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["words"] });
+      qc.invalidateQueries({ queryKey: ["collections"] });
+    },
+  });
+}
+
 export function useSubmitReview() {
   const qc = useQueryClient();
   return useMutation({
@@ -148,11 +191,11 @@ export function useSubmitReview() {
 }
 
 // ---------- Listening ----------
-export function useListeningSession(mode: "choice" | "dictation", limit = 10, collectionId?: string) {
+export function useListeningSession(mode: "choice" | "dictation", limit = 10, collectionId?: string, wordIds?: string) {
   return useQuery({
-    queryKey: ["listening", mode, limit, collectionId],
+    queryKey: ["listening", mode, limit, collectionId, wordIds],
     queryFn: async () =>
-      (await api.get("/listening/session", { params: { mode, limit, collectionId } })).data as {
+      (await api.get("/listening/session", { params: { mode, limit, collectionId, wordIds } })).data as {
         mode: string;
         questions: any[];
       },
@@ -202,10 +245,10 @@ export function useMarkArticleRead() {
 }
 
 // ---------- Quiz ----------
-export function useQuizQuestions(type: string, limit = 10, collectionId?: string) {
+export function useQuizQuestions(type: string, limit = 10, collectionId?: string, wordIds?: string) {
   return useQuery({
-    queryKey: ["quiz", type, limit, collectionId],
-    queryFn: async () => (await api.get("/quiz/generate", { params: { type, limit, collectionId } })).data,
+    queryKey: ["quiz", type, limit, collectionId, wordIds],
+    queryFn: async () => (await api.get("/quiz/generate", { params: { type, limit, collectionId, wordIds } })).data,
     enabled: !!type,
   });
 }

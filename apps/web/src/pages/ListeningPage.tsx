@@ -13,8 +13,9 @@ import { cn } from "@/lib/utils";
 export default function ListeningPage() {
   const [params, setParams] = useSearchParams();
   const [collectionId, setCollectionId] = useState(params.get("collectionId") ?? "ALL");
+  const [wordIds, setWordIds] = useState(params.get("wordIds") ?? undefined);
   const [mode, setMode] = useState<"choice" | "dictation">("choice");
-  const { data, isLoading, refetch } = useListeningSession(mode, 10, collectionId);
+  const { data, isLoading, refetch } = useListeningSession(mode, 10, collectionId, wordIds);
   const submitAttempt = useSubmitListeningAttempt();
 
   const [index, setIndex] = useState(0);
@@ -52,9 +53,14 @@ export default function ListeningPage() {
 
   function changeCollection(v: string) {
     setCollectionId(v);
+    setWordIds(undefined);
     setIndex(0);
     setCorrect(0);
-    setParams((p) => { if (v === "ALL") p.delete("collectionId"); else p.set("collectionId", v); return p; });
+    setParams((p) => {
+      if (v === "ALL") p.delete("collectionId"); else p.set("collectionId", v);
+      p.delete("wordIds");
+      return p;
+    });
   }
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
@@ -72,6 +78,7 @@ export default function ListeningPage() {
           </Tabs>
           <CollectionPicker value={collectionId} onChange={changeCollection} />
         </div>
+        {wordIds && <p className="text-xs text-muted-foreground">กำลังฝึกจากคำที่เลือกไว้ ({wordIds.split(",").length} คำ)</p>}
       </div>
 
       {!q ? (

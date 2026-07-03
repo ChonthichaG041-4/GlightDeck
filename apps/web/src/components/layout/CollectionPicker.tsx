@@ -5,10 +5,12 @@ export function CollectionPicker({
   value,
   onChange,
   className,
+  includeAllWords,
 }: {
-  value: string; // "ALL" or a collection id
+  value: string; // "ALL", "ALL_WORDS" (if includeAllWords), or a collection id
   onChange: (value: string) => void;
   className?: string;
+  includeAllWords?: boolean;
 }) {
   const { data: collections } = useCollections();
 
@@ -19,6 +21,7 @@ export function CollectionPicker({
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="ALL">All collections</SelectItem>
+        {includeAllWords && <SelectItem value="ALL_WORDS">All words</SelectItem>}
         {collections?.map((c) => (
           <SelectItem key={c.id} value={c.id}>
             {c.icon} {c.name} ({c.wordCount})

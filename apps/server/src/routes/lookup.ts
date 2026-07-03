@@ -1,29 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
+import { LANG_NAMES, WORD_TYPES, freeDictionaryLookup, freeTranslate } from "../lib/wordLookup";
 
 const router = Router();
-
-const LANG_NAMES: Record<string, string> = {
-  en: "English", th: "Thai", ja: "Japanese", ko: "Korean", zh: "Chinese",
-  vi: "Vietnamese", fr: "French", de: "German", es: "Spanish", id: "Indonesian",
-};
 
 const inputSchema = z.object({
   headword: z.string().min(1),
   sourceLang: z.string().default("en"),
   targetLangs: z.array(z.string()).min(1).default(["th"]),
 });
-
-const WORD_TYPES = [
-  "NOUN", "VERB", "ADJECTIVE", "ADVERB", "IDIOM", "SLANG",
-  "PHRASE", "PREPOSITION", "CONJUNCTION", "PRONOUN", "OTHER",
-];
-
-const POS_MAP: Record<string, string> = {
-  noun: "NOUN", verb: "VERB", adjective: "ADJECTIVE", adverb: "ADVERB",
-  preposition: "PREPOSITION", conjunction: "CONJUNCTION", pronoun: "PRONOUN",
-  interjection: "OTHER", exclamation: "OTHER", article: "OTHER", determiner: "OTHER",
-};
 
 interface LookupResult {
   source: "ai" | "free" | "offline";
@@ -32,38 +17,6 @@ interface LookupResult {
   level: string | null;
   example: string | null;
   translations: Record<string, string>;
-}
-
-/** Free, no-key dictionary lookup (English headwords only) - https://dictionaryapi.dev */
-async function freeDictionaryLookup(headword: string): Promise<{ ipa: string | null; type: string | null; example: string | null }> {
-  try {
-    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(headword)}`);
-    if (!res.ok) return { ipa: null, type: null, example: null };
-    const data: any = await res.json();
-    const entry = data?.[0];
-    const ipa = entry?.phonetic ?? entry?.phonetics?.find((p: any) => p.text)?.text ?? null;
-    const meaning = entry?.meanings?.[0];
-    const type = meaning?.partOfSpeech ? POS_MAP[meaning.partOfSpeech.toLowerCase()] ?? "OTHER" : null;
-    const example = meaning?.definitions?.find((d: any) => d.example)?.example ?? null;
-    return { ipa, type, example };
-  } catch {
-    return { ipa: null, type: null, example: null };
-  }
-}
-
-/** Free, no-key translation - https://mymemory.translated.net (rate-limited, best-effort). */
-async function freeTranslate(headword: string, sourceLang: string, targetLang: string): Promise<string> {
-  try {
-    const res = await fetch(
-      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(headword)}&langpair=${sourceLang}|${targetLang}`
-    );
-    if (!res.ok) return "";
-    const data: any = await res.json();
-    const text = data?.responseData?.translatedText ?? "";
-    return /no query|invalid|rate limit/i.test(text) ? "" : text;
-  } catch {
-    return "";
-  }
 }
 
 async function freeLookup(headword: string, sourceLang: string, targetLangs: string[]): Promise<LookupResult> {

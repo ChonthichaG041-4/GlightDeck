@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Plus, Search, Star, Volume2, Upload, Trash2, Sparkles, Layers, Headphones, ListChecks, Pencil, Folder } from "lucide-react";
+import { Plus, Search, Star, Volume2, Upload, Trash2, Sparkles, Layers, Headphones, ListChecks, Pencil, Folder, Wand2, X, CheckSquare, Square } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,8 @@ import {
 import { Label } from "@/components/ui/label";
 import {
   useWords, useCollections, useTags, useToggleFavorite, useCreateWord, useUpdateWord, useDeleteWord, useImportPaste,
-  useWordRelations, useWordLookup, useSentences, useCreateSentence,
+  useWordRelations, useWordLookup, useSentences, useCreateSentence, useGenerateWordSet, useBulkCreateWords,
+  type GeneratedWordItem,
 } from "@/api/hooks";
 import { speak } from "@/lib/tts";
 import { ManageDialog } from "@/components/layout/ManageDialog";
@@ -40,6 +41,13 @@ export default function VocabularyPage() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [collectionId, setCollectionId] = useState(params.get("collectionId") ?? "ALL");
   const [selected, setSelected] = useState<Word | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // "ALL" = collections gallery (click a card to drill into its words).
+  // "ALL_WORDS" = flat list of every word, no collection grouping.
+  // anything else = a specific collection id, filtering the word grid to just that group.
+  const isGallery = collectionId === "ALL";
+  const activeCollectionId = !isGallery && collectionId !== "ALL_WORDS" ? collectionId : undefined;
 
   const filters = useMemo(
     () => ({
@@ -47,19 +55,37 @@ export default function VocabularyPage() {
       level: level || undefined,
       type: type || undefined,
       status: status || undefined,
-      collectionId: collectionId !== "ALL" ? collectionId : undefined,
+      collectionId: activeCollectionId,
       favorite: favoritesOnly ? "true" : undefined,
     }),
-    [search, level, type, status, collectionId, favoritesOnly]
+    [search, level, type, status, activeCollectionId, favoritesOnly]
   );
 
   function changeCollection(v: string) {
     setCollectionId(v);
+    setSelectedIds(new Set());
     setParams((p) => {
       if (v === "ALL") p.delete("collectionId");
       else p.set("collectionId", v);
       return p;
     });
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Unchecked = practice the whole current group; checked = practice just those words.
+  function practiceQuery(): string {
+    const p = new URLSearchParams();
+    if (selectedIds.size > 0) p.set("wordIds", Array.from(selectedIds).join(","));
+    else if (activeCollectionId) p.set("collectionId", activeCollectionId);
+    return p.toString();
   }
 
   const { data: words, isLoading } = useWords(filters);
@@ -73,140 +99,191 @@ export default function VocabularyPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Vocabulary</h1>
-          <p className="text-sm text-muted-foreground">{words?.length ?? 0} words in your personal dictionary</p>
+          <p className="text-sm text-muted-foreground">
+            {isGallery
+              ? `${collections?.length ?? 0} collections`
+              : `${words?.length ?? 0} words in your personal dictionary`}
+          </p>
         </div>
         <div className="flex gap-2">
           <ManageDialog />
           <ImportDialog collections={collections} />
+          <GenerateSetDialog collections={collections} />
           <AddWordDialog collections={collections} tags={tags} />
         </div>
       </div>
 
       <Card>
         <CardContent className="flex flex-wrap items-center gap-3 p-4">
-          <div className="relative min-w-[220px] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              placeholder="Search apple, angry, ancient..."
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setParams((p) => {
-                  p.set("search", e.target.value);
-                  return p;
-                });
-              }}
-            />
-          </div>
+          {!isGallery && (
+            <div className="relative min-w-[220px] flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="pl-9"
+                placeholder="Search apple, angry, ancient..."
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setParams((p) => {
+                    p.set("search", e.target.value);
+                    return p;
+                  });
+                }}
+              />
+            </div>
+          )}
 
-          <CollectionPicker value={collectionId} onChange={changeCollection} className="w-44" />
+          <CollectionPicker value={collectionId} onChange={changeCollection} className="w-48" includeAllWords />
 
-          <Select value={level || "ALL"} onValueChange={(v) => setLevel(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-28"><SelectValue placeholder="Level" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Levels</SelectItem>
-              {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {!isGallery && (
+            <>
+              <Select value={level || "ALL"} onValueChange={(v) => setLevel(v === "ALL" ? "" : v)}>
+                <SelectTrigger className="w-28"><SelectValue placeholder="Level" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Levels</SelectItem>
+                  {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                </SelectContent>
+              </Select>
 
-          <Select value={type || "ALL"} onValueChange={(v) => setType(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-32"><SelectValue placeholder="Tag / Type" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Types</SelectItem>
-              {TYPES.map((t) => <SelectItem key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</SelectItem>)}
-            </SelectContent>
-          </Select>
+              <Select value={type || "ALL"} onValueChange={(v) => setType(v === "ALL" ? "" : v)}>
+                <SelectTrigger className="w-32"><SelectValue placeholder="Tag / Type" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Types</SelectItem>
+                  {TYPES.map((t) => <SelectItem key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</SelectItem>)}
+                </SelectContent>
+              </Select>
 
-          <Select value={status || "ALL"} onValueChange={(v) => setStatus(v === "ALL" ? "" : v)}>
-            <SelectTrigger className="w-32"><SelectValue placeholder="Status" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Status</SelectItem>
-              {STATUSES.map((s) => <SelectItem key={s} value={s}>{s.charAt(0) + s.slice(1).toLowerCase()}</SelectItem>)}
-            </SelectContent>
-          </Select>
+              <Select value={status || "ALL"} onValueChange={(v) => setStatus(v === "ALL" ? "" : v)}>
+                <SelectTrigger className="w-32"><SelectValue placeholder="Status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Status</SelectItem>
+                  {STATUSES.map((s) => <SelectItem key={s} value={s}>{s.charAt(0) + s.slice(1).toLowerCase()}</SelectItem>)}
+                </SelectContent>
+              </Select>
 
-          <Button
-            type="button"
-            variant={favoritesOnly ? "default" : "outline"}
-            size="sm"
-            className="gap-1.5"
-            onClick={() => setFavoritesOnly((v) => !v)}
-          >
-            <Star className={`h-3.5 w-3.5 ${favoritesOnly ? "fill-current" : ""}`} /> Favorites
-          </Button>
+              <Button
+                type="button"
+                variant={favoritesOnly ? "default" : "outline"}
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setFavoritesOnly((v) => !v)}
+              >
+                <Star className={`h-3.5 w-3.5 ${favoritesOnly ? "fill-current" : ""}`} /> Favorites
+              </Button>
+            </>
+          )}
         </CardContent>
       </Card>
 
-      {collectionId !== "ALL" && (
-        <Card className="border-primary/30 bg-primary/5">
-          <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-            <p className="flex items-center gap-2 text-sm font-medium">
-              <Sparkles className="h-4 w-4 text-primary" /> Practice just this group
-            </p>
-            <div className="flex gap-2">
-              <Button asChild size="sm" variant="outline" className="gap-1.5">
-                <Link to={`/flashcards?collectionId=${collectionId}`}><Layers className="h-3.5 w-3.5" /> Flashcards</Link>
-              </Button>
-              <Button asChild size="sm" variant="outline" className="gap-1.5">
-                <Link to={`/listening?collectionId=${collectionId}`}><Headphones className="h-3.5 w-3.5" /> Listening</Link>
-              </Button>
-              <Button asChild size="sm" variant="outline" className="gap-1.5">
-                <Link to={`/quiz?collectionId=${collectionId}`}><ListChecks className="h-3.5 w-3.5" /> Quiz</Link>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading...</p>
-      ) : (
+      {isGallery ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {words?.map((w) => (
-            <Card key={w.id} className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => setSelected(w)}>
-              <CardContent className="p-4">
-                <div className="mb-2 flex items-start justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xl">{w.image}</span>
-                    <div>
-                      <p className="font-semibold">{w.headword}</p>
-                      <p className="text-xs text-muted-foreground">{w.ipa}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={statusColor[w.status] as any}>{w.status}</Badge>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleFavorite.mutate(w.id);
-                      }}
-                    >
-                      <Star className={`h-4 w-4 ${w.favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground"}`} />
-                    </button>
-                  </div>
-                </div>
-                <p className="mb-2 text-sm">{w.meaning}</p>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant="outline">{w.level}</Badge>
-                  {w.collection && (
-                    <Badge variant="secondary" className="gap-1">
-                      <span>{w.collection.icon ?? <Folder className="h-3 w-3" />}</span> {w.collection.name}
-                    </Badge>
-                  )}
-                  {w.tags.slice(0, 2).map((t) => (
-                    <Badge key={t.id} variant="secondary">{t.name}</Badge>
-                  ))}
+          {collections?.map((c) => (
+            <Card
+              key={c.id}
+              className="cursor-pointer transition-shadow hover:shadow-md"
+              onClick={() => changeCollection(c.id)}
+            >
+              <CardContent className="flex items-center gap-3 p-5">
+                <span className="text-3xl">{c.icon ?? "📚"}</span>
+                <div>
+                  <p className="font-semibold">{c.name}</p>
+                  <p className="text-xs text-muted-foreground">{c.wordCount ?? 0} words</p>
                 </div>
               </CardContent>
             </Card>
           ))}
-          {words?.length === 0 && (
+          {!collections?.length && (
             <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
-              No words found. Try adjusting filters or add your first word.
+              No collections yet. Click "Manage" to create one, or add a word and assign it to a new collection.
             </p>
           )}
         </div>
+      ) : (
+        <>
+          <Card className="border-primary/30 bg-primary/5">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+              <p className="flex items-center gap-2 text-sm font-medium">
+                <Sparkles className="h-4 w-4 text-primary" />
+                {selectedIds.size > 0 ? `Practice ${selectedIds.size} selected word(s)` : "Practice this group"}
+              </p>
+              <div className="flex gap-2">
+                <Button asChild size="sm" variant="outline" className="gap-1.5">
+                  <Link to={`/flashcards?${practiceQuery()}`}><Layers className="h-3.5 w-3.5" /> Flashcards</Link>
+                </Button>
+                <Button asChild size="sm" variant="outline" className="gap-1.5">
+                  <Link to={`/listening?${practiceQuery()}`}><Headphones className="h-3.5 w-3.5" /> Listening</Link>
+                </Button>
+                <Button asChild size="sm" variant="outline" className="gap-1.5">
+                  <Link to={`/quiz?${practiceQuery()}`}><ListChecks className="h-3.5 w-3.5" /> Quiz</Link>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {words?.map((w) => (
+                <Card key={w.id} className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => setSelected(w)}>
+                  <CardContent className="p-4">
+                    <div className="mb-2 flex items-start justify-between">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelect(w.id);
+                          }}
+                          className="shrink-0"
+                          title="Select for practice"
+                        >
+                          {selectedIds.has(w.id) ? (
+                            <CheckSquare className="h-4 w-4 text-primary" />
+                          ) : (
+                            <Square className="h-4 w-4 text-muted-foreground" />
+                          )}
+                        </button>
+                        <span className="text-xl">{w.image}</span>
+                        <div>
+                          <p className="font-semibold">{w.headword}</p>
+                          <p className="text-xs text-muted-foreground">{w.ipa}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={statusColor[w.status] as any}>{w.status}</Badge>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFavorite.mutate(w.id);
+                          }}
+                        >
+                          <Star className={`h-4 w-4 ${w.favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground"}`} />
+                        </button>
+                      </div>
+                    </div>
+                    <p className="mb-2 text-sm">{w.meaning}</p>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant="outline">{w.level}</Badge>
+                      {w.collection && (
+                        <Badge variant="secondary" className="gap-1">
+                          <span>{w.collection.icon ?? <Folder className="h-3 w-3" />}</span> {w.collection.name}
+                        </Badge>
+                      )}
+                      {w.tags.slice(0, 2).map((t) => (
+                        <Badge key={t.id} variant="secondary">{t.name}</Badge>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              {words?.length === 0 && (
+                <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
+                  No words found. Try adjusting filters or add your first word.
+                </p>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       <WordDetailDialog
@@ -697,6 +774,336 @@ function ImportDialog({ collections }: { collections?: any[] }) {
             Import & auto-generate cards
           </Button>
         </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const GENERATE_TYPES = ["NOUN", "VERB", "ADJECTIVE", "ADVERB", "IDIOM", "SLANG", "PHRASE", "PREPOSITION", "CONJUNCTION", "PRONOUN", "OTHER"];
+
+function GenerateSetDialog({ collections }: { collections?: any[] }) {
+  const [open, setOpen] = useState(false);
+  const [step, setStep] = useState<"setup" | "review">("setup");
+
+  const [sourceLang, setSourceLang] = useState("en");
+  const [targetLangs, setTargetLangs] = useState<string[]>(["th"]);
+  const [topic, setTopic] = useState("");
+  const [cefrLevel, setCefrLevel] = useState("MIXED");
+  const [style, setStyle] = useState("TEXTBOOK");
+  const [scope, setScope] = useState("STANDARD");
+  const [count, setCount] = useState(20);
+  const [items, setItems] = useState<GeneratedWordItem[]>([]);
+  const [note, setNote] = useState<string | null>(null);
+
+  const [collectionChoice, setCollectionChoice] = useState("NONE"); // "NONE" | "NEW" | <collection id>
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const generate = useGenerateWordSet();
+  const bulkCreate = useBulkCreateWords();
+
+  function toggleTargetLang(code: string) {
+    setTargetLangs((prev) => {
+      const next = prev.includes(code) ? prev.filter((l) => l !== code) : [...prev, code];
+      return next.length ? next : prev; // always keep >= 1 target language
+    });
+  }
+
+  function resetAll() {
+    setStep("setup");
+    setTopic("");
+    setCefrLevel("MIXED");
+    setStyle("TEXTBOOK");
+    setScope("STANDARD");
+    setCount(20);
+    setItems([]);
+    setNote(null);
+    setCollectionChoice("NONE");
+    setNewCollectionName("");
+    setError(null);
+  }
+
+  function runGenerate() {
+    if (!topic.trim()) {
+      setError("กรอกชุดคำศัพท์ที่คุณต้องการก่อน");
+      return;
+    }
+    setError(null);
+    generate.mutate(
+      { topic: topic.trim(), sourceLang, targetLangs, cefrLevel, style, scope, count },
+      {
+        onSuccess: (data) => {
+          setNote(data.note ?? null);
+          if (!data.words?.length) {
+            setError(data.note ?? "ไม่พบคำศัพท์ที่เกี่ยวข้องกับหัวข้อนี้ ลองหัวข้ออื่น");
+            return;
+          }
+          setItems(
+            data.words.map((w) => ({
+              headword: w.headword,
+              ipa: w.ipa ?? "",
+              type: w.type ?? "OTHER",
+              level: w.level ?? "A1",
+              example: w.example ?? "",
+              translations: w.translations ?? {},
+            }))
+          );
+          setStep("review");
+        },
+        onError: () => setError("สร้างชุดคำศัพท์ไม่สำเร็จ ลองใหม่อีกครั้ง"),
+      }
+    );
+  }
+
+  function updateItem(index: number, patch: Partial<GeneratedWordItem>) {
+    setItems((prev) => prev.map((it, i) => (i === index ? { ...it, ...patch } : it)));
+  }
+
+  function updateTranslation(index: number, lang: string, value: string) {
+    setItems((prev) =>
+      prev.map((it, i) => (i === index ? { ...it, translations: { ...it.translations, [lang]: value } } : it))
+    );
+  }
+
+  function removeItem(index: number) {
+    setItems((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function confirmSave() {
+    setError(null);
+    if (!items.length) {
+      setError("ไม่มีคำศัพท์ให้บันทึกแล้ว");
+      return;
+    }
+    if (collectionChoice === "NEW" && !newCollectionName.trim()) {
+      setError("กรอกชื่อ Collection ใหม่ก่อน");
+      return;
+    }
+
+    bulkCreate.mutate(
+      {
+        sourceLang,
+        collectionId: collectionChoice !== "NONE" && collectionChoice !== "NEW" ? collectionChoice : undefined,
+        newCollectionName: collectionChoice === "NEW" ? newCollectionName.trim() : undefined,
+        words: items.map((it) => ({
+          headword: it.headword,
+          ipa: it.ipa || undefined,
+          type: it.type,
+          level: it.level || "A1",
+          example: it.example || undefined,
+          translations: it.translations,
+        })),
+      },
+      {
+        onSuccess: () => {
+          setOpen(false);
+          resetAll();
+        },
+        onError: (err: any) => setError(err?.response?.data?.error ?? "บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง"),
+      }
+    );
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        setOpen(v);
+        if (!v) resetAll();
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" className="gap-2">
+          <Wand2 className="h-4 w-4" /> AI สร้างชุดคำศัพท์
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>สร้างชุดคำศัพท์ด้วย AI</DialogTitle>
+          <DialogDescription>
+            {step === "setup"
+              ? "เลือกภาษาต้นทาง-ภาษาแปล แล้วกรอกชุดคำศัพท์ที่คุณต้องการ เช่น \"สภาพอากาศ\""
+              : "ตรวจสอบ แก้ไข หรือลบรายการที่ไม่ต้องการ ก่อนกดยืนยันบันทึก"}
+          </DialogDescription>
+        </DialogHeader>
+
+        {step === "setup" && (
+          <div className="space-y-4">
+            <div>
+              <Label>ภาษาต้นทาง</Label>
+              <Select value={sourceLang} onValueChange={setSourceLang}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LANGUAGES.map((l) => <SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label className="mb-1.5 block">แปลเป็นภาษา (เลือกได้มากกว่า 1)</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {LANGUAGES.filter((l) => l.code !== sourceLang).map((l) => (
+                  <button
+                    key={l.code}
+                    type="button"
+                    onClick={() => toggleTargetLang(l.code)}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                      targetLangs.includes(l.code) ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent"
+                    }`}
+                  >
+                    {l.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <Label>กรอกชุดคำศัพท์ที่คุณต้องการ</Label>
+              <Input
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder='เช่น "สภาพอากาศ", "ผลไม้", "การเดินทาง"...'
+                onKeyDown={(e) => { if (e.key === "Enter") runGenerate(); }}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>ระดับ CEFR</Label>
+                <Select value={cefrLevel} onValueChange={setCefrLevel}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                    <SelectItem value="MIXED">ผสม (Mixed)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>จำนวนคำ</Label>
+                <Select value={String(count)} onValueChange={(v) => setCount(Number(v))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[10, 20, 30, 40, 50].map((n) => <SelectItem key={n} value={String(n)}>{n} คำ</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>รูปแบบคำศัพท์</Label>
+                <Select value={style} onValueChange={setStyle}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="TEXTBOOK">ตำราเรียน (Textbook)</SelectItem>
+                    <SelectItem value="CONVERSATION">บทสนทนา (Conversation)</SelectItem>
+                    <SelectItem value="TRAVEL">การเดินทาง (Travel)</SelectItem>
+                    <SelectItem value="BUSINESS">ธุรกิจ (Business)</SelectItem>
+                    <SelectItem value="ACADEMIC">วิชาการ (Academic)</SelectItem>
+                    <SelectItem value="IELTS">IELTS</SelectItem>
+                    <SelectItem value="TOEIC">TOEIC</SelectItem>
+                    <SelectItem value="KIDS">เด็ก (Kids)</SelectItem>
+                    <SelectItem value="RANDOM">สุ่ม (Random)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>ขอบเขตคำศัพท์</Label>
+                <Select value={scope} onValueChange={setScope}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="BASIC">พื้นฐาน (Basic)</SelectItem>
+                    <SelectItem value="STANDARD">มาตรฐาน (Standard)</SelectItem>
+                    <SelectItem value="COMPLETE">ครบถ้วน (Complete)</SelectItem>
+                    <SelectItem value="NATIVE">เจ้าของภาษา (Native)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+
+            <Button className="w-full gap-2" onClick={runGenerate} disabled={generate.isPending || !topic.trim()}>
+              <Wand2 className="h-4 w-4" /> {generate.isPending ? "กำลังสร้าง..." : "สร้างชุดคำศัพท์"}
+            </Button>
+          </div>
+        )}
+
+        {step === "review" && (
+          <div className="space-y-4">
+            {note && <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">{note}</p>}
+            <p className="text-sm text-muted-foreground">พบ {items.length} คำ — แก้ไขหรือกดลบรายการที่ไม่ต้องการ:</p>
+
+            <div className="max-h-80 space-y-2 overflow-y-auto rounded-lg border p-2">
+              {items.map((it, i) => (
+                <div key={i} className="space-y-2 rounded-md border p-2">
+                  <div className="flex items-start gap-2">
+                    <div className="grid flex-1 grid-cols-2 gap-2">
+                      <Input value={it.headword} onChange={(e) => updateItem(i, { headword: e.target.value })} placeholder="Word" />
+                      <Input value={it.ipa ?? ""} onChange={(e) => updateItem(i, { ipa: e.target.value })} placeholder="IPA" />
+                    </div>
+                    <Button type="button" variant="ghost" size="icon" onClick={() => removeItem(i)}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Select value={it.type} onValueChange={(v) => updateItem(i, { type: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {GENERATE_TYPES.map((t) => <SelectItem key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <Select value={it.level ?? "A1"} onValueChange={(v) => updateItem(i, { level: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {targetLangs.map((code) => (
+                      <div key={code}>
+                        <Label className="text-xs">{languageLabel(code)}</Label>
+                        <Input value={it.translations?.[code] ?? ""} onChange={(e) => updateTranslation(i, code, e.target.value)} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {!items.length && <p className="p-4 text-center text-sm text-muted-foreground">ไม่เหลือคำศัพท์แล้ว</p>}
+            </div>
+
+            <div className="space-y-2 rounded-lg border p-3">
+              <Label>บันทึกลง Collection</Label>
+              <Select value={collectionChoice} onValueChange={setCollectionChoice}>
+                <SelectTrigger><SelectValue placeholder="เลือก Collection" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="NONE">ไม่ระบุ Collection</SelectItem>
+                  {collections?.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  <SelectItem value="NEW">+ สร้าง Collection ใหม่</SelectItem>
+                </SelectContent>
+              </Select>
+              {collectionChoice === "NEW" && (
+                <Input
+                  value={newCollectionName}
+                  onChange={(e) => setNewCollectionName(e.target.value)}
+                  placeholder='ชื่อ Collection ใหม่ เช่น "สภาพอากาศ"'
+                />
+              )}
+            </div>
+
+            {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setStep("setup")}>
+                ← กลับไปแก้หัวข้อ
+              </Button>
+              <Button className="flex-1" onClick={confirmSave} disabled={bulkCreate.isPending || !items.length}>
+                {bulkCreate.isPending ? "กำลังบันทึก..." : `ยืนยันสร้าง ${items.length} คำ`}
+              </Button>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

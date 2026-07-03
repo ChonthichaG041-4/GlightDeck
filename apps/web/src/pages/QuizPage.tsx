@@ -22,10 +22,16 @@ export default function QuizPage() {
   const [params, setParams] = useSearchParams();
   const [type, setType] = useState("MULTIPLE_CHOICE");
   const [collectionId, setCollectionId] = useState(params.get("collectionId") ?? "ALL");
+  const [wordIds, setWordIds] = useState(params.get("wordIds") ?? undefined);
 
   function changeCollection(v: string) {
     setCollectionId(v);
-    setParams((p) => { if (v === "ALL") p.delete("collectionId"); else p.set("collectionId", v); return p; });
+    setWordIds(undefined);
+    setParams((p) => {
+      if (v === "ALL") p.delete("collectionId"); else p.set("collectionId", v);
+      p.delete("wordIds");
+      return p;
+    });
   }
 
   return (
@@ -40,14 +46,19 @@ export default function QuizPage() {
           </Tabs>
           <CollectionPicker value={collectionId} onChange={changeCollection} />
         </div>
+        {wordIds && <p className="text-xs text-muted-foreground">กำลังฝึกจากคำที่เลือกไว้ ({wordIds.split(",").length} คำ)</p>}
       </div>
-      {type === "MATCHING" ? <MatchingQuiz collectionId={collectionId} /> : <SequentialQuiz type={type} collectionId={collectionId} />}
+      {type === "MATCHING" ? (
+        <MatchingQuiz collectionId={collectionId} wordIds={wordIds} />
+      ) : (
+        <SequentialQuiz type={type} collectionId={collectionId} wordIds={wordIds} />
+      )}
     </div>
   );
 }
 
-function SequentialQuiz({ type, collectionId }: { type: string; collectionId: string }) {
-  const { data, isLoading, refetch } = useQuizQuestions(type, 8, collectionId);
+function SequentialQuiz({ type, collectionId, wordIds }: { type: string; collectionId: string; wordIds?: string }) {
+  const { data, isLoading, refetch } = useQuizQuestions(type, 8, collectionId, wordIds);
   const submitQuiz = useSubmitQuiz();
   const [index, setIndex] = useState(0);
   const [score, setScore] = useState(0);
@@ -153,8 +164,8 @@ function SequentialQuiz({ type, collectionId }: { type: string; collectionId: st
   );
 }
 
-function MatchingQuiz({ collectionId }: { collectionId: string }) {
-  const { data, isLoading, refetch } = useQuizQuestions("MATCHING", 6, collectionId);
+function MatchingQuiz({ collectionId, wordIds }: { collectionId: string; wordIds?: string }) {
+  const { data, isLoading, refetch } = useQuizQuestions("MATCHING", 6, collectionId, wordIds);
   const submitQuiz = useSubmitQuiz();
   const group = data?.questions?.[0];
   const [leftPick, setLeftPick] = useState<string | null>(null);

@@ -15,10 +15,13 @@ router.get("/generate", async (req, res) => {
   const type = String(req.query.type ?? "MULTIPLE_CHOICE");
   const limit = Number(req.query.limit ?? 10);
   const collectionId = req.query.collectionId as string | undefined;
-  const collectionFilter = collectionId && collectionId !== "ALL" ? { collectionId } : {};
+  const wordIdsParam = req.query.wordIds as string | undefined;
+  const wordIds = wordIdsParam ? wordIdsParam.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  // A hand-picked wordIds selection takes priority over collectionId.
+  const scopeFilter = wordIds?.length ? { id: { in: wordIds } } : collectionId && collectionId !== "ALL" ? { collectionId } : {};
 
   const pool = await prisma.word.findMany({
-    where: { userId: user.id, ...collectionFilter },
+    where: { userId: user.id, ...scopeFilter },
     orderBy: [{ dueDate: "asc" }],
     take: Math.max(limit * 3, 20),
   });

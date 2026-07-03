@@ -7,11 +7,24 @@ import { serializeWord } from "./words";
 
 const router = Router();
 
-// GET /api/flashcards/queue?limit=20 -> due + new words for today's session
+// GET /api/flashcards/queue?limit=20&collectionId=&wordIds=id1,id2
+// wordIds (hand-picked selection from the Vocabulary page) takes priority over collectionId
+// and, when present, ignores due/new scheduling entirely - the user asked for exactly these words.
 router.get("/queue", async (req, res) => {
   const user = getDbUser(req);
   const limit = Number(req.query.limit ?? 20);
   const collectionId = req.query.collectionId as string | undefined;
+  const wordIdsParam = req.query.wordIds as string | undefined;
+  const wordIds = wordIdsParam ? wordIdsParam.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+
+  if (wordIds?.length) {
+    const cards = await prisma.word.findMany({
+      where: { userId: user.id, id: { in: wordIds } },
+      include: { tags: { include: { tag: true } }, collection: true },
+    });
+    return res.json({ dueCount: cards.length, newCount: 0, cards: cards.map(serializeWord) });
+  }
+
   const collectionFilter = collectionId && collectionId !== "ALL" ? { collectionId } : {};
 
   const due = await prisma.word.findMany({

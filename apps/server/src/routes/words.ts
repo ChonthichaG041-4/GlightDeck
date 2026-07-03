@@ -105,6 +105,64 @@ router.post("/", async (req, res) => {
   res.status(201).json(serializeWord(word));
 });
 
+const bulkInput = z.object({
+  sourceLang: z.string().default("en"),
+  collectionId: z.string().optional(), // add into this existing collection
+  newCollectionName: z.string().optional(), // or create a brand-new collection with this name
+  words: z.array(z.object({
+    headword: z.string().min(1),
+    ipa: z.string().optional().nullable(),
+    type: z.enum([
+      "NOUN", "VERB", "ADJECTIVE", "ADVERB", "IDIOM", "SLANG",
+      "PHRASE", "PREPOSITION", "CONJUNCTION", "PRONOUN", "OTHER",
+    ]).default("OTHER"),
+    level: z.enum(["A1", "A2", "B1", "B2", "C1", "C2"]).default("A1"),
+    example: z.string().optional().nullable(),
+    translations: z.record(z.string(), z.string()).optional(),
+  })).min(1),
+});
+
+// POST /api/words/bulk { sourceLang, collectionId?, newCollectionName?, words: [...] }
+// Saves a whole reviewed batch at once - used by the AI "generate vocabulary set" flow
+// (Vocabulary page -> "AI generate word set"), optionally creating a brand-new Collection first.
+router.post("/bulk", async (req, res) => {
+  const user = getDbUser(req);
+  const { sourceLang, collectionId, newCollectionName, words } = bulkInput.parse(req.body);
+
+  let finalCollectionId: string | null = collectionId || null;
+  if (newCollectionName?.trim()) {
+    const collection = await prisma.collection.create({
+      data: { name: newCollectionName.trim(), userId: user.id },
+    });
+    finalCollectionId = collection.id;
+  }
+
+  const created = await prisma.$transaction(
+    words.map((w) => {
+      const translationEntries = Object.entries(w.translations ?? {}).filter(([, text]) => text?.trim());
+      const primaryMeaning = translationEntries[0]?.[1] ?? "";
+      return prisma.word.create({
+        data: {
+          headword: w.headword,
+          sourceLang,
+          meaning: primaryMeaning,
+          ipa: w.ipa ?? undefined,
+          type: w.type,
+          level: w.level,
+          example: w.example ?? undefined,
+          userId: user.id,
+          collectionId: finalCollectionId ?? undefined,
+          translations: translationEntries.length
+            ? { create: translationEntries.map(([lang, text]) => ({ lang, text })) }
+            : undefined,
+        },
+      });
+    })
+  );
+
+  res.status(201).json({ imported: created.length, collectionId: finalCollectionId });
+});
+
 router.patch("/:id", async (req, res) => {
   const user = getDbUser(req);
   const data = wordInput.partial().parse(req.body);

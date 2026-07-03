@@ -20,7 +20,8 @@ const ratingButtons: { rating: Rating; label: string; className: string }[] = [
 export default function FlashcardsPage() {
   const [params, setParams] = useSearchParams();
   const [collectionId, setCollectionId] = useState(params.get("collectionId") ?? "ALL");
-  const { data, isLoading, refetch } = useFlashcardQueue(20, collectionId);
+  const [wordIds, setWordIds] = useState(params.get("wordIds") ?? undefined);
+  const { data, isLoading, refetch } = useFlashcardQueue(20, collectionId, wordIds);
   const { data: leeches } = useLeeches();
   const submitReview = useSubmitReview();
   const [index, setIndex] = useState(0);
@@ -28,8 +29,13 @@ export default function FlashcardsPage() {
 
   function changeCollection(v: string) {
     setCollectionId(v);
+    setWordIds(undefined);
     setIndex(0);
-    setParams((p) => { if (v === "ALL") p.delete("collectionId"); else p.set("collectionId", v); return p; });
+    setParams((p) => {
+      if (v === "ALL") p.delete("collectionId"); else p.set("collectionId", v);
+      p.delete("wordIds");
+      return p;
+    });
   }
 
   const cards = data?.cards ?? [];
@@ -56,6 +62,7 @@ export default function FlashcardsPage() {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-16 text-center">
         <CollectionPicker value={collectionId} onChange={changeCollection} className="w-full" />
+        {wordIds && <p className="text-xs text-muted-foreground">กำลังฝึกจากคำที่เลือกไว้ ({wordIds.split(",").length} คำ)</p>}
         <PartyPopper className="h-10 w-10 text-primary" />
         <h2 className="text-xl font-semibold">All caught up!</h2>
         <p className="text-sm text-muted-foreground">No cards due right now. Add more words or come back later.</p>
