@@ -38,8 +38,8 @@ function ProtectedShell() {
 export default function App() {
   return (
     <Routes>
-      <Route path="/sign-in/*" element={<div className="flex h-screen items-center justify-center"><SignIn routing="path" path="/sign-in" /></div>} />
-      <Route path="/sign-up/*" element={<div className="flex h-screen items-center justify-center"><SignUp routing="path" path="/sign-up" /></div>} />
+      <Route path="/sign-in/*" element={<div className="flex h-screen items-center justify-center"><SignIn  /></div>} />
+      <Route path="/sign-up/*" element={<div className="flex h-screen items-center justify-center"><SignUp  /></div>} />
 
       <Route element={<ProtectedShell />}>
         <Route path="/" element={<HomePage />} />

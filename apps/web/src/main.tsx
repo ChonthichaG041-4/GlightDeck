@@ -11,11 +11,17 @@ const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 console.log("Clerk key =", clerkPubKey);
 console.log("All env =", import.meta.env);
 
+
 // Treat "missing" and "still the placeholder from .env.example" the same way -
 // ClerkProvider throws a hard, uncatchable error for either, so we short-circuit
 // before ever rendering it and show an actionable setup screen instead.
 const isValidClerkKey = !!clerkPubKey && clerkPubKey.startsWith("pk_") && !clerkPubKey.includes("xxxx");
-
+console.log({
+  clerkPubKey,
+  startsWithPk: clerkPubKey?.startsWith("pk_"),
+  hasXxxx: clerkPubKey?.includes("xxxx"),
+  isValidClerkKey,
+});
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: { staleTime: 30_000, retry: 1 },
