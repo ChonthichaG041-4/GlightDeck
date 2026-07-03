@@ -1,0 +1,317 @@
+// LingoDeck - Prisma schema
+// Personal Vocabulary Learning System
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Enums ----------
+
+enum Level {
+  A1
+  A2
+  B1
+  B2
+  C1
+  C2
+}
+
+enum WordType {
+  NOUN
+  VERB
+  ADJECTIVE
+  ADVERB
+  IDIOM
+  SLANG
+  PHRASE
+  PREPOSITION
+  CONJUNCTION
+  PRONOUN
+  OTHER
+}
+
+enum WordStatus {
+  NEW
+  LEARNING
+  REVIEW
+  MASTERED
+}
+
+enum QuizType {
+  MULTIPLE_CHOICE
+  MATCHING
+  TYPING
+  SENTENCE
+  LISTENING
+}
+
+enum ReviewRating {
+  AGAIN
+  HARD
+  GOOD
+  EASY
+}
+
+// ---------- Core models ----------
+
+model User {
+  id          String   @id @default(cuid())
+  clerkId     String   @unique
+  email       String   @unique
+  name        String?
+  avatarUrl   String?
+  currentStreak Int    @default(0)
+  longestStreak Int    @default(0)
+  lastActiveAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  words         Word[]
+  collections   Collection[]
+  tags          Tag[]
+  articles      Article[]
+  sentences     SentenceBookmark[]
+  quizAttempts  QuizAttempt[]
+  reviewLogs    ReviewLog[]
+  achievements  UserAchievement[]
+  dailyProgress DailyProgress[]
+  streakLogs    StreakLog[]
+}
+
+model Collection {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  icon        String?  @default("📚")
+  color       String?  @default("#6366f1")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  words Word[]
+
+  @@index([userId])
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  color     String?  @default("#a855f7")
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  words WordTag[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Word {
+  id        String     @id @default(cuid())
+  headword  String
+  sourceLang String    @default("en") // language of the headword
+  meaning   String    // primary/back-compat translation
+  ipa       String?
+  type      WordType   @default(OTHER)
+  level     Level      @default(A1)
+  example   String?
+  exampleTranslate String?
+  synonym   String?
+  opposite  String?
+  frequency Int        @default(3) // 1-5 stars
+  image     String?    @default("📘") // emoji or URL
+  audioUrl  String?
+  status    WordStatus @default(NEW)
+  favorite  Boolean    @default(false)
+
+  // Spaced Repetition (SM-2 style, Anki-like)
+  easeFactor   Float    @default(2.5)
+  intervalDays Float    @default(0)
+  repetitions  Int      @default(0)
+  lapses       Int      @default(0) // wrong-answer count, drives "Smart Review"
+  dueDate      DateTime @default(now())
+  lastReviewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  collectionId String?
+  collection   Collection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+
+  tags WordTag[]
+  translations WordTranslation[]
+  reviewLogs ReviewLog[]
+
+  relationsFrom WordRelation[] @relation("relFrom")
+  relationsTo   WordRelation[] @relation("relTo")
+
+  sentences SentenceBookmark[]
+
+  @@index([userId])
+  @@index([collectionId])
+  @@index([userId, status])
+  @@index([userId, dueDate])
+}
+
+model WordTag {
+  wordId String
+  tagId  String
+  word   Word @relation(fields: [wordId], references: [id], onDelete: Cascade)
+  tag    Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([wordId, tagId])
+}
+
+// Multiple target-language translations per word (e.g. th, ja, ko...).
+// `Word.meaning` stays as the primary/back-compat translation for existing UI.
+model WordTranslation {
+  id        String   @id @default(cuid())
+  lang      String   // ISO-ish language code: th, en, ja, ko, zh, ...
+  text      String
+  createdAt DateTime @default(now())
+
+  wordId String
+  word   Word   @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@unique([wordId, lang])
+}
+
+// Word relationship "mindmap" (happy -> joy -> cheerful -> ...)
+model WordRelation {
+  id     String @id @default(cuid())
+  fromId String
+  toId   String
+  label  String? @default("related") // e.g. synonym, chain
+
+  from Word @relation("relFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  to   Word @relation("relTo", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId])
+}
+
+// Anki-style SM-2 review history, one row per flashcard review event
+model ReviewLog {
+  id        String       @id @default(cuid())
+  rating    ReviewRating
+  intervalDays Float
+  easeFactor   Float
+  reviewedAt DateTime    @default(now())
+
+  wordId String
+  word   Word   @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, reviewedAt])
+  @@index([wordId])
+}
+
+model Article {
+  id        String   @id @default(cuid())
+  title     String
+  category  String   @default("Reading") // Harry Potter, Game Articles, News, Novel...
+  content   String   @db.Text
+  source    String?
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model SentenceBookmark {
+  id         String   @id @default(cuid())
+  text       String
+  translation String?
+  createdAt  DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  wordId String?
+  word   Word?  @relation(fields: [wordId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+}
+
+model QuizAttempt {
+  id        String   @id @default(cuid())
+  type      QuizType
+  score     Int
+  total     Int
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model DailyProgress {
+  id     String   @id @default(cuid())
+  date   DateTime @db.Date
+
+  reviewCount   Int @default(0)
+  listeningCount Int @default(0)
+  typingCount   Int @default(0)
+  sentenceCount Int @default(0)
+  newWordsCount Int @default(0)
+  articlesRead  Int @default(0)
+
+  reviewTarget   Int @default(20)
+  listeningTarget Int @default(10)
+  typingTarget   Int @default(10)
+  sentenceTarget Int @default(5)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+model StreakLog {
+  id   String   @id @default(cuid())
+  date DateTime @db.Date
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+model Achievement {
+  id          String @id @default(cuid())
+  key         String @unique // e.g. STREAK_7, STREAK_30, WORDS_100, WORDS_500
+  title       String
+  description String
+  icon        String @default("🔥")
+
+  users UserAchievement[]
+}
+
+model UserAchievement {
+  id            String   @id @default(cuid())
+  unlockedAt    DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+}

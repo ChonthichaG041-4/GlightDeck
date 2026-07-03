@@ -1,0 +1,703 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { Plus, Search, Star, Volume2, Upload, Trash2, Sparkles, Layers, Headphones, ListChecks, Pencil, Folder } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  useWords, useCollections, useTags, useToggleFavorite, useCreateWord, useUpdateWord, useDeleteWord, useImportPaste,
+  useWordRelations, useWordLookup, useSentences, useCreateSentence,
+} from "@/api/hooks";
+import { speak } from "@/lib/tts";
+import { ManageDialog } from "@/components/layout/ManageDialog";
+import { CollectionPicker } from "@/components/layout/CollectionPicker";
+import { LANGUAGES, languageLabel } from "@/lib/languages";
+import type { Level, Word, WordType } from "@/types";
+
+const LEVELS: Level[] = ["A1", "A2", "B1", "B2", "C1", "C2"];
+const TYPES: WordType[] = ["NOUN", "VERB", "ADJECTIVE", "ADVERB", "IDIOM", "SLANG", "PHRASE"];
+const STATUSES = ["NEW", "LEARNING", "REVIEW", "MASTERED"];
+
+const statusColor: Record<string, string> = {
+  NEW: "secondary",
+  LEARNING: "warning",
+  REVIEW: "default",
+  MASTERED: "success",
+};
+
+export default function VocabularyPage() {
+  const [params, setParams] = useSearchParams();
+  const [search, setSearch] = useState(params.get("search") ?? "");
+  const [level, setLevel] = useState(params.get("level") ?? "");
+  const [type, setType] = useState(params.get("type") ?? "");
+  const [status, setStatus] = useState(params.get("status") ?? "");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [collectionId, setCollectionId] = useState(params.get("collectionId") ?? "ALL");
+  const [selected, setSelected] = useState<Word | null>(null);
+
+  const filters = useMemo(
+    () => ({
+      search: search || undefined,
+      level: level || undefined,
+      type: type || undefined,
+      status: status || undefined,
+      collectionId: collectionId !== "ALL" ? collectionId : undefined,
+      favorite: favoritesOnly ? "true" : undefined,
+    }),
+    [search, level, type, status, collectionId, favoritesOnly]
+  );
+
+  function changeCollection(v: string) {
+    setCollectionId(v);
+    setParams((p) => {
+      if (v === "ALL") p.delete("collectionId");
+      else p.set("collectionId", v);
+      return p;
+    });
+  }
+
+  const { data: words, isLoading } = useWords(filters);
+  const { data: collections } = useCollections();
+  const { data: tags } = useTags();
+  const toggleFavorite = useToggleFavorite();
+  const deleteWord = useDeleteWord();
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Vocabulary</h1>
+          <p className="text-sm text-muted-foreground">{words?.length ?? 0} words in your personal dictionary</p>
+        </div>
+        <div className="flex gap-2">
+          <ManageDialog />
+          <ImportDialog collections={collections} />
+          <AddWordDialog collections={collections} tags={tags} />
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-3 p-4">
+          <div className="relative min-w-[220px] flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="Search apple, angry, ancient..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setParams((p) => {
+                  p.set("search", e.target.value);
+                  return p;
+                });
+              }}
+            />
+          </div>
+
+          <CollectionPicker value={collectionId} onChange={changeCollection} className="w-44" />
+
+          <Select value={level || "ALL"} onValueChange={(v) => setLevel(v === "ALL" ? "" : v)}>
+            <SelectTrigger className="w-28"><SelectValue placeholder="Level" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All Levels</SelectItem>
+              {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+            </SelectContent>
+          </Select>
+
+          <Select value={type || "ALL"} onValueChange={(v) => setType(v === "ALL" ? "" : v)}>
+            <SelectTrigger className="w-32"><SelectValue placeholder="Tag / Type" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All Types</SelectItem>
+              {TYPES.map((t) => <SelectItem key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</SelectItem>)}
+            </SelectContent>
+          </Select>
+
+          <Select value={status || "ALL"} onValueChange={(v) => setStatus(v === "ALL" ? "" : v)}>
+            <SelectTrigger className="w-32"><SelectValue placeholder="Status" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All Status</SelectItem>
+              {STATUSES.map((s) => <SelectItem key={s} value={s}>{s.charAt(0) + s.slice(1).toLowerCase()}</SelectItem>)}
+            </SelectContent>
+          </Select>
+
+          <Button
+            type="button"
+            variant={favoritesOnly ? "default" : "outline"}
+            size="sm"
+            className="gap-1.5"
+            onClick={() => setFavoritesOnly((v) => !v)}
+          >
+            <Star className={`h-3.5 w-3.5 ${favoritesOnly ? "fill-current" : ""}`} /> Favorites
+          </Button>
+        </CardContent>
+      </Card>
+
+      {collectionId !== "ALL" && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+            <p className="flex items-center gap-2 text-sm font-medium">
+              <Sparkles className="h-4 w-4 text-primary" /> Practice just this group
+            </p>
+            <div className="flex gap-2">
+              <Button asChild size="sm" variant="outline" className="gap-1.5">
+                <Link to={`/flashcards?collectionId=${collectionId}`}><Layers className="h-3.5 w-3.5" /> Flashcards</Link>
+              </Button>
+              <Button asChild size="sm" variant="outline" className="gap-1.5">
+                <Link to={`/listening?collectionId=${collectionId}`}><Headphones className="h-3.5 w-3.5" /> Listening</Link>
+              </Button>
+              <Button asChild size="sm" variant="outline" className="gap-1.5">
+                <Link to={`/quiz?collectionId=${collectionId}`}><ListChecks className="h-3.5 w-3.5" /> Quiz</Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {words?.map((w) => (
+            <Card key={w.id} className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => setSelected(w)}>
+              <CardContent className="p-4">
+                <div className="mb-2 flex items-start justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">{w.image}</span>
+                    <div>
+                      <p className="font-semibold">{w.headword}</p>
+                      <p className="text-xs text-muted-foreground">{w.ipa}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={statusColor[w.status] as any}>{w.status}</Badge>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFavorite.mutate(w.id);
+                      }}
+                    >
+                      <Star className={`h-4 w-4 ${w.favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground"}`} />
+                    </button>
+                  </div>
+                </div>
+                <p className="mb-2 text-sm">{w.meaning}</p>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge variant="outline">{w.level}</Badge>
+                  {w.collection && (
+                    <Badge variant="secondary" className="gap-1">
+                      <span>{w.collection.icon ?? <Folder className="h-3 w-3" />}</span> {w.collection.name}
+                    </Badge>
+                  )}
+                  {w.tags.slice(0, 2).map((t) => (
+                    <Badge key={t.id} variant="secondary">{t.name}</Badge>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+          {words?.length === 0 && (
+            <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
+              No words found. Try adjusting filters or add your first word.
+            </p>
+          )}
+        </div>
+      )}
+
+      <WordDetailDialog
+        word={selected}
+        open={!!selected}
+        onOpenChange={(o) => !o && setSelected(null)}
+        collections={collections}
+      />
+    </div>
+  );
+}
+
+const EDIT_TYPES = ["NOUN", "VERB", "ADJECTIVE", "ADVERB", "IDIOM", "SLANG", "PHRASE", "PREPOSITION", "CONJUNCTION", "PRONOUN", "OTHER"];
+
+function WordDetailDialog({
+  word, open, onOpenChange, collections,
+}: { word: Word | null; open: boolean; onOpenChange: (o: boolean) => void; collections?: any[] }) {
+  const deleteWord = useDeleteWord();
+  const updateWord = useUpdateWord();
+  const { data: sentences } = useSentences();
+  const createSentence = useCreateSentence();
+
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState<any>(null);
+  const [newSentence, setNewSentence] = useState("");
+  const [newSentenceTranslate, setNewSentenceTranslate] = useState("");
+
+  useEffect(() => {
+    if (word) {
+      setForm({
+        meaning: word.meaning,
+        ipa: word.ipa ?? "",
+        type: word.type,
+        level: word.level,
+        example: word.example ?? "",
+        exampleTranslate: word.exampleTranslate ?? "",
+        synonym: word.synonym ?? "",
+        opposite: word.opposite ?? "",
+        frequency: word.frequency,
+        collectionId: word.collection?.id ?? "",
+      });
+    }
+    setEditing(false);
+  }, [word?.id]);
+
+  if (!word || !form) return null;
+
+  const wordSentences = sentences?.filter((s) => s.word?.id === word.id) ?? [];
+
+  function save() {
+    if (!word) return;
+    updateWord.mutate(
+      { id: word.id, ...form, collectionId: form.collectionId || undefined },
+      { onSuccess: () => setEditing(false) }
+    );
+  }
+
+  function addSentence() {
+    if (!word || !newSentence.trim()) return;
+    createSentence.mutate(
+      { text: newSentence.trim(), translation: newSentenceTranslate.trim() || undefined, wordId: word.id },
+      { onSuccess: () => { setNewSentence(""); setNewSentenceTranslate(""); } }
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+        <DialogHeader>
+          <div className="flex items-center justify-between pr-6">
+            <DialogTitle className="flex items-center gap-2 text-2xl">
+              {word.image} {word.headword}
+              <button onClick={() => speak(word.headword)}>
+                <Volume2 className="h-5 w-5 text-muted-foreground hover:text-primary" />
+              </button>
+            </DialogTitle>
+            <div className="flex items-center gap-3">
+              <button
+                title="Edit"
+                onClick={() => setEditing((e) => !e)}
+                className={editing ? "text-primary" : "text-muted-foreground hover:text-primary"}
+              >
+                <Pencil className="h-4 w-4" />
+              </button>
+              <button
+                className="text-destructive"
+                onClick={() => {
+                  deleteWord.mutate(word.id);
+                  onOpenChange(false);
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </DialogHeader>
+
+        {editing ? (
+          <div className="space-y-3 text-sm">
+            <div>
+              <Label>Meaning</Label>
+              <Input value={form.meaning} onChange={(e) => setForm({ ...form, meaning: e.target.value })} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label>IPA</Label>
+                <Input value={form.ipa} onChange={(e) => setForm({ ...form, ipa: e.target.value })} />
+              </div>
+              <div>
+                <Label>Type</Label>
+                <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {EDIT_TYPES.map((t) => <SelectItem key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Level</Label>
+                <Select value={form.level} onValueChange={(v) => setForm({ ...form, level: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div>
+              <Label>Example</Label>
+              <Input value={form.example} onChange={(e) => setForm({ ...form, example: e.target.value })} />
+            </div>
+            <div>
+              <Label>Translate</Label>
+              <Input value={form.exampleTranslate} onChange={(e) => setForm({ ...form, exampleTranslate: e.target.value })} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Synonym</Label>
+                <Input value={form.synonym} onChange={(e) => setForm({ ...form, synonym: e.target.value })} />
+              </div>
+              <div>
+                <Label>Opposite</Label>
+                <Input value={form.opposite} onChange={(e) => setForm({ ...form, opposite: e.target.value })} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Collection</Label>
+                <Select value={form.collectionId || "NONE"} onValueChange={(v) => setForm({ ...form, collectionId: v === "NONE" ? "" : v })}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="NONE">None</SelectItem>
+                    {collections?.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Frequency</Label>
+                <Select value={String(form.frequency)} onValueChange={(v) => setForm({ ...form, frequency: Number(v) })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[1, 2, 3, 4, 5].map((n) => <SelectItem key={n} value={String(n)}>{"★".repeat(n)}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button className="flex-1" onClick={save} disabled={updateWord.isPending}>
+                {updateWord.isPending ? "Saving..." : "Save changes"}
+              </Button>
+              <Button variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3 text-sm">
+            <Field label="Meaning" value={word.meaning} />
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="IPA" value={word.ipa || "-"} />
+              <Field label="Type" value={word.type} />
+              <Field label="Level" value={word.level} />
+            </div>
+            <Field label="Example" value={word.example || "-"} />
+            <Field label="Translate" value={word.exampleTranslate || "-"} />
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Synonym" value={word.synonym || "-"} />
+              <Field label="Opposite" value={word.opposite || "-"} />
+            </div>
+            <Field label="Collection" value={word.collection?.name ?? "-"} />
+            <div>
+              <p className="mb-1 font-medium text-muted-foreground">Frequency</p>
+              <p>{"★".repeat(word.frequency)}{"☆".repeat(5 - word.frequency)}</p>
+            </div>
+            <WordMindmap wordId={word.id} />
+          </div>
+        )}
+
+        <div className="mt-2 space-y-2 rounded-lg border p-3">
+          <p className="text-xs font-medium text-muted-foreground">Example sentences</p>
+          {wordSentences.map((s) => (
+            <div key={s.id} className="rounded-md bg-muted p-2 text-sm">
+              <p>"{s.text}"</p>
+              {s.translation && <p className="text-xs text-muted-foreground">{s.translation}</p>}
+            </div>
+          ))}
+          <Input placeholder="Add another example sentence..." value={newSentence} onChange={(e) => setNewSentence(e.target.value)} />
+          <Input placeholder="Translation (optional)" value={newSentenceTranslate} onChange={(e) => setNewSentenceTranslate(e.target.value)} />
+          <Button size="sm" className="gap-1.5" onClick={addSentence} disabled={createSentence.isPending}>
+            <Plus className="h-3.5 w-3.5" /> Add example
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function WordMindmap({ wordId }: { wordId: string }) {
+  const { data } = useWordRelations(wordId);
+  if (!data?.related?.length) return null;
+  return (
+    <div>
+      <p className="mb-2 font-medium text-muted-foreground">Word Relationship</p>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="rounded-full bg-primary px-3 py-1 font-semibold text-primary-foreground">{data.headword}</span>
+        {data.related.map((r: any, i: number) => (
+          <span key={r.id} className="flex items-center gap-2">
+            <span className="text-muted-foreground">→</span>
+            <span className="rounded-full bg-accent px-3 py-1 text-accent-foreground">{r.headword}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="mb-1 font-medium text-muted-foreground">{label}</p>
+      <p>{value}</p>
+    </div>
+  );
+}
+
+function AddWordDialog({ collections, tags }: { collections?: any[]; tags?: any[] }) {
+  const [open, setOpen] = useState(false);
+  const createWord = useCreateWord();
+  const lookup = useWordLookup();
+
+  const [sourceLang, setSourceLang] = useState("en");
+  const [targetLangs, setTargetLangs] = useState<string[]>(["th"]);
+  const [form, setForm] = useState({
+    headword: "", ipa: "", example: "", exampleTranslate: "",
+    level: "A1", type: "NOUN", collectionId: "",
+  });
+  const [translations, setTranslations] = useState<Record<string, string>>({ th: "" });
+  const [error, setError] = useState<string | null>(null);
+
+  function toggleTargetLang(code: string) {
+    setTargetLangs((prev) => {
+      const next = prev.includes(code) ? prev.filter((l) => l !== code) : [...prev, code];
+      return next.length ? next : prev; // always keep >= 1 target language
+    });
+  }
+
+  function runAutoSuggest() {
+    if (!form.headword.trim()) return;
+    lookup.mutate(
+      { headword: form.headword.trim(), sourceLang, targetLangs },
+      {
+        onSuccess: (data) => {
+          setForm((f) => ({
+            ...f,
+            ipa: data.ipa ?? f.ipa,
+            type: data.type ?? f.type,
+            level: data.level ?? f.level,
+            example: data.example ?? f.example,
+          }));
+          setTranslations((prev) => ({ ...prev, ...data.translations }));
+        },
+      }
+    );
+  }
+
+  function reset() {
+    setForm({ headword: "", ipa: "", example: "", exampleTranslate: "", level: "A1", type: "NOUN", collectionId: "" });
+    setTranslations({ th: "" });
+    setTargetLangs(["th"]);
+    setSourceLang("en");
+    setError(null);
+  }
+
+  function submit() {
+    setError(null);
+
+    if (!form.headword.trim()) {
+      setError("Enter the word first.");
+      return;
+    }
+
+    const missingLangs = targetLangs.filter((code) => !translations[code]?.trim());
+    if (missingLangs.length) {
+      setError(`Fill in the meaning for: ${missingLangs.map(languageLabel).join(", ")} (or run Auto-suggest).`);
+      return;
+    }
+
+    const primaryMeaning = translations[targetLangs[0]].trim();
+    createWord.mutate(
+      {
+        ...form,
+        sourceLang,
+        meaning: primaryMeaning,
+        translations,
+        collectionId: form.collectionId || undefined,
+        level: form.level as Level,
+        type: form.type as WordType,
+        frequency: 3,
+      },
+      {
+        onSuccess: () => { setOpen(false); reset(); },
+        onError: (err: any) => setError(err?.response?.data?.error ?? "Could not save this word. Please try again."),
+      }
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button className="gap-2"><Plus className="h-4 w-4" /> Add Word</Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Add a new word</DialogTitle>
+          <DialogDescription>Choose languages, type the word, and let auto-suggest fill in the rest.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Source language</Label>
+              <Select value={sourceLang} onValueChange={setSourceLang}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LANGUAGES.map((l) => <SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Collection</Label>
+              <Select value={form.collectionId || "NONE"} onValueChange={(v) => setForm({ ...form, collectionId: v === "NONE" ? "" : v })}>
+                <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="NONE">None</SelectItem>
+                  {collections?.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div>
+            <Label className="mb-1.5 block">Translate into (choose one or more)</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {LANGUAGES.filter((l) => l.code !== sourceLang).map((l) => (
+                <button
+                  key={l.code}
+                  type="button"
+                  onClick={() => toggleTargetLang(l.code)}
+                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                    targetLangs.includes(l.code) ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent"
+                  }`}
+                >
+                  {l.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <Label>Word ({languageLabel(sourceLang)})</Label>
+              <Input value={form.headword} onChange={(e) => setForm({ ...form, headword: e.target.value })} placeholder="apple" />
+            </div>
+            <div className="flex items-end">
+              <Button type="button" variant="outline" className="gap-1.5" onClick={runAutoSuggest} disabled={lookup.isPending || !form.headword.trim()}>
+                <Sparkles className="h-4 w-4" /> {lookup.isPending ? "..." : "Auto-suggest"}
+              </Button>
+            </div>
+          </div>
+
+          {lookup.data?.source === "free" && (
+            <p className="text-xs text-muted-foreground">
+              Filled in using free dictionary + translation APIs (no API key needed). Level isn't auto-detected this way -
+              set it manually, or add <code>ANTHROPIC_API_KEY</code> on the server for smarter, more accurate suggestions.
+            </p>
+          )}
+          {lookup.data?.source === "offline" && (
+            <p className="text-xs text-muted-foreground">
+              Auto-suggest couldn't reach any lookup service right now (check your internet connection). Fill the fields in manually below.
+            </p>
+          )}
+
+          <div className="grid grid-cols-3 gap-3">
+            <div><Label>IPA</Label><Input value={form.ipa} onChange={(e) => setForm({ ...form, ipa: e.target.value })} placeholder="/ˈæpəl/" /></div>
+            <div>
+              <Label>Type</Label>
+              <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["NOUN", "VERB", "ADJECTIVE", "ADVERB", "IDIOM", "SLANG", "PHRASE", "PREPOSITION", "CONJUNCTION", "PRONOUN", "OTHER"].map((t) => (
+                    <SelectItem key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Level</Label>
+              <Select value={form.level} onValueChange={(v) => setForm({ ...form, level: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-2 rounded-lg border p-3">
+            <p className="text-xs font-medium text-muted-foreground">Meaning - editable per language</p>
+            {targetLangs.map((code) => (
+              <div key={code}>
+                <Label className="text-xs">{languageLabel(code)}</Label>
+                <Input
+                  value={translations[code] ?? ""}
+                  onChange={(e) => setTranslations((prev) => ({ ...prev, [code]: e.target.value }))}
+                  placeholder={`Meaning in ${languageLabel(code)}`}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div><Label>Example sentence</Label><Input value={form.example} onChange={(e) => setForm({ ...form, example: e.target.value })} /></div>
+          <div><Label>Example translation</Label><Input value={form.exampleTranslate} onChange={(e) => setForm({ ...form, exampleTranslate: e.target.value })} /></div>
+
+          {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+
+          <Button className="w-full" onClick={submit} disabled={createWord.isPending}>
+            {createWord.isPending ? "Saving..." : "Save word"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ImportDialog({ collections }: { collections?: any[] }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("apple\norange\nbanana\ngrape");
+  const [collectionId, setCollectionId] = useState("");
+  const importPaste = useImportPaste();
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" className="gap-2"><Upload className="h-4 w-4" /> Import</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Import vocabulary</DialogTitle>
+          <DialogDescription>Paste one word per line (CSV / TXT / Excel export also supported via the API).</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <Label>Collection</Label>
+          <Select value={collectionId || "NONE"} onValueChange={(v) => setCollectionId(v === "NONE" ? "" : v)}>
+            <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">None</SelectItem>
+              {collections?.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <textarea
+            className="h-32 w-full rounded-md border p-2 text-sm"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <Button
+            className="w-full"
+            onClick={() =>
+              importPaste.mutate({ text, collectionId: collectionId || undefined }, { onSuccess: () => setOpen(false) })
+            }
+          >
+            Import & auto-generate cards
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
