@@ -1,4 +1,4 @@
-// LingoDeck - Prisma schema
+// GlightDeck - Prisma schema
 // Personal Vocabulary Learning System
 
 generator client {

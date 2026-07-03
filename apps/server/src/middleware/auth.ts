@@ -27,7 +27,7 @@ export const requireUser: RequestHandler = async (req, res, next) => {
       user = await prisma.user.create({
         data: {
           clerkId: userId,
-          email: clerkUser.email ?? `${userId}@placeholder.lingodeck.app`,
+          email: clerkUser.email ?? `${userId}@placeholder.glightdeck.app`,
           name: clerkUser.name ?? "New Learner",
         },
       });

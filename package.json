@@ -1,8 +1,8 @@
 {
-  "name": "lingodeck",
+  "name": "glightdeck",
   "private": true,
   "version": "0.1.0",
-  "description": "LingoDeck - Personal Vocabulary Learning System",
+  "description": "GlightDeck - Personal Vocabulary Learning System",
   "workspaces": [
     "apps/web",
     "apps/server"

@@ -3,16 +3,16 @@ version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: lingodeck-postgres
+    container_name: glightdeck-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: lingodeck
-      POSTGRES_PASSWORD: lingodeck
-      POSTGRES_DB: lingodeck
+      POSTGRES_USER: glightdeck
+      POSTGRES_PASSWORD: glightdeck
+      POSTGRES_DB: glightdeck
     ports:
       - "5432:5432"
     volumes:
-      - lingodeck_pgdata:/var/lib/postgresql/data
+      - glightdeck_pgdata:/var/lib/postgresql/data
 
 volumes:
-  lingodeck_pgdata:
+  glightdeck_pgdata:

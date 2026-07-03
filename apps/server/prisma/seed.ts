@@ -3,7 +3,7 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log("Seeding LingoDeck demo data...");
+  console.log("Seeding GlightDeck demo data...");
 
   // Demo user - in production a User row is created lazily on first
   // authenticated request (see src/middleware/auth.ts). This lets you
@@ -13,7 +13,7 @@ async function main() {
     update: {},
     create: {
       clerkId: "demo_user_clerk_id",
-      email: "demo@lingodeck.app",
+      email: "demo@glightdeck.app",
       name: "Cheso",
       currentStreak: 27,
       longestStreak: 31,

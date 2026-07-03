@@ -14,7 +14,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(withClerk);
 
-app.get("/health", (_req, res) => res.json({ ok: true, service: "lingodeck-api" }));
+app.get("/health", (_req, res) => res.json({ ok: true, service: "glightdeck-api" }));
 
 app.use("/api", apiRouter);
 
@@ -22,5 +22,5 @@ app.use(notFound);
 app.use(errorHandler);
 
 app.listen(PORT, () => {
-  console.log(`LingoDeck API listening on http://localhost:${PORT}`);
+  console.log(`GlightDeck API listening on http://localhost:${PORT}`);
 });

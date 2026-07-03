@@ -1,4 +1,4 @@
-# LingoDeck - Personal Vocabulary Learning System
+# GlightDeck - Personal Vocabulary Learning System
 
 A personal English learning hub: your own vocabulary bank, Anki-style spaced
 repetition flashcards, listening & dictation drills, article reading with
@@ -15,7 +15,7 @@ for explaining words and idioms.
 ## Project structure
 
 ```
-LingoDeck/
+GlightDeck/
 ├── apps/
 │   ├── web/        React + Vite frontend (port 5173)
 │   └── server/     Express + Prisma API (port 4000)
