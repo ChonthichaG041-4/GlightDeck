@@ -1,5 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Play, Pause, RotateCcw, Minus, Plus, Wand2, ArrowLeft, CheckCircle2, XCircle } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode, type ComponentType } from "react";
+import {
+  Play, Pause, RotateCcw, Wand2, ArrowLeft, CheckCircle2, XCircle,
+  Headphones, BookOpen, Gem, BarChart3, FileText, Clock, Mic, Globe, Gauge,
+  Sparkles, Sprout, Book, MessageCircle, TrendingUp, Star, Crown, Shuffle,
+  Check, Minus, Plus,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,11 +20,29 @@ import {
 } from "@/lib/tts";
 import { cn } from "@/lib/utils";
 
-const CEFR_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
+const DIFFICULTY_CARDS: { value: string; icon: ComponentType<{ className?: string }>; title: string; description: string }[] = [
+  { value: "AUTO", icon: Sparkles, title: "Auto", description: "AI selects the appropriate level" },
+  { value: "A1", icon: Sprout, title: "Beginner (A1)", description: "Basic vocabulary and simple sentences" },
+  { value: "A2", icon: Book, title: "Elementary (A2)", description: "Everyday topics and simple conversations" },
+  { value: "B1", icon: MessageCircle, title: "Intermediate (B1)", description: "Familiar topics and connected ideas" },
+  { value: "B2", icon: TrendingUp, title: "Upper Intermediate (B2)", description: "Complex ideas and detailed information" },
+  { value: "C1", icon: Star, title: "Advanced (C1)", description: "Abstract topics and advanced language" },
+  { value: "C2", icon: Crown, title: "Proficiency (C2)", description: "Sophisticated content and nuanced meaning" },
+  { value: "MIXED", icon: Shuffle, title: "Mixed", description: "Mixed levels for varied practice" },
+];
+const DIFFICULTY_LABELS: Record<string, string> = Object.fromEntries(DIFFICULTY_CARDS.map((d) => [d.value, d.title]));
 const LENGTHS = [
   { value: "SHORT", label: "Short" },
   { value: "MEDIUM", label: "Medium" },
   { value: "LONG", label: "Long" },
+];
+const EXAM_MODES = [
+  { value: "IELTS", label: "IELTS" },
+  { value: "TOEFL", label: "TOEFL" },
+  { value: "TOEIC", label: "TOEIC" },
+  { value: "CU_TEP", label: "CU-TEP" },
+  { value: "TU_GET", label: "TU-GET" },
+  { value: "GENERAL_ENGLISH", label: "General English" },
 ];
 const VOICES = [
   { value: "FEMALE", label: "Female" },
@@ -67,8 +90,10 @@ const LISTEN_LIMIT_OPTIONS = [1, 2, 3, 4, 5];
 export default function ListeningPage() {
   // ---- Setup state ----
   const [topic, setTopic] = useState("");
-  const [cefrLevel, setCefrLevel] = useState("B1");
-  const [paragraphs, setParagraphs] = useState(2);
+  const [examMode, setExamMode] = useState("GENERAL_ENGLISH");
+  const [cefrLevel, setCefrLevel] = useState("AUTO");
+  const [paragraphMode, setParagraphMode] = useState<"AUTO" | "MANUAL">("AUTO");
+  const [paragraphCount, setParagraphCount] = useState(5);
   const [length, setLength] = useState("MEDIUM");
   const [voice, setVoice] = useState<VoiceGender>("FEMALE");
   const [accent, setAccent] = useState<Accent>("AMERICAN");
@@ -136,13 +161,14 @@ export default function ListeningPage() {
       {
         topic: topic.trim(),
         cefrLevel,
-        paragraphs,
+        paragraphs: paragraphMode === "AUTO" ? "AUTO" : paragraphCount,
         length,
         assessmentSkills: skills,
         testMode,
         questionTypes,
         numQuestions,
         targetLang: "th",
+        examMode,
       },
       {
         onSuccess: (data) => {
@@ -248,44 +274,110 @@ export default function ListeningPage() {
         </div>
 
         <Card>
-          <CardContent className="space-y-4 p-5">
-            <h2 className="font-semibold">Exercise Setup</h2>
+          <CardContent className="space-y-5 p-5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <Headphones className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 className="font-semibold">Exercise Setup</h2>
+                <p className="text-xs text-muted-foreground">Configure your listening practice</p>
+              </div>
+            </div>
+
             <div>
-              <Label>Topic</Label>
+              <FieldLabel icon={<BookOpen className="h-4 w-4" />} text="Topic" />
               <Input
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
                 placeholder='e.g. "Weather", "Ordering Food", "Job Interview", "Traveling in Japan"'
               />
+              <p className="mt-1 text-xs text-muted-foreground">Enter a topic or theme for your listening exercise</p>
             </div>
 
-            <PillGroup label="Difficulty" options={CEFR_LEVELS.map((l) => ({ value: l, label: l }))} value={cefrLevel} onChange={setCefrLevel} />
-
             <div>
-              <Label className="mb-1.5 block">Paragraphs</Label>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-accent"
-                  onClick={() => setParagraphs((p) => Math.max(1, p - 1))}
-                >
-                  <Minus className="h-4 w-4" />
-                </button>
-                <span className="w-6 text-center font-medium">{paragraphs}</span>
-                <button
-                  type="button"
-                  className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-accent"
-                  onClick={() => setParagraphs((p) => Math.min(6, p + 1))}
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
+              <FieldLabel icon={<Gem className="h-4 w-4" />} text="Exam Mode" />
+              <div className="flex flex-wrap gap-1.5">
+                {EXAM_MODES.map((m) => (
+                  <PillButton key={m.value} active={examMode === m.value} onClick={() => setExamMode(m.value)} showCheck>
+                    {m.label}
+                  </PillButton>
+                ))}
               </div>
             </div>
 
-            <PillGroup label="Length" options={LENGTHS} value={length} onChange={setLength} />
-            <PillGroup label="Voice" options={VOICES} value={voice} onChange={(v) => setVoice(v as VoiceGender)} />
-            <PillGroup label="Accent" options={ACCENTS} value={accent} onChange={(v) => setAccent(v as Accent)} />
-            <PillGroup label="Speaking Speed" options={SPEEDS} value={speakingSpeed} onChange={(v) => setSpeakingSpeed(v as "SLOW" | "NORMAL" | "FAST")} />
+            <div>
+              <FieldLabel icon={<BarChart3 className="h-4 w-4" />} text="Difficulty" />
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {DIFFICULTY_CARDS.map((d) => (
+                  <OptionCard
+                    key={d.value}
+                    active={cefrLevel === d.value}
+                    onClick={() => setCefrLevel(d.value)}
+                    icon={<d.icon className="h-5 w-5" />}
+                    title={d.title}
+                    description={d.description}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <FieldLabel icon={<FileText className="h-4 w-4" />} text="Paragraphs" />
+              <div className="space-y-3 rounded-xl border p-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <OptionCard
+                    active={paragraphMode === "AUTO"}
+                    onClick={() => setParagraphMode("AUTO")}
+                    icon={<Sparkles className="h-5 w-5" />}
+                    title="Auto"
+                    description="Let AI decide"
+                  />
+                  <OptionCard
+                    active={paragraphMode === "MANUAL"}
+                    onClick={() => setParagraphMode("MANUAL")}
+                    icon={<FileText className="h-5 w-5" />}
+                    title="Manual"
+                    description="Set custom number"
+                  />
+                </div>
+                <div className={cn("rounded-lg bg-muted/40 p-3", paragraphMode === "AUTO" && "pointer-events-none opacity-50")}>
+                  <p className="mb-2 text-sm font-medium">Number of paragraphs</p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border bg-background hover:bg-accent"
+                      onClick={() => setParagraphCount((p) => Math.max(1, p - 1))}
+                    >
+                      <Minus className="h-4 w-4" />
+                    </button>
+                    <span className="w-6 text-center font-medium">{paragraphCount}</span>
+                    <button
+                      type="button"
+                      className="flex h-8 w-8 items-center justify-center rounded-md border bg-background hover:bg-accent"
+                      onClick={() => setParagraphCount((p) => p + 1)}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </button>
+                    <span className="text-sm text-muted-foreground">paragraphs</span>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">Range: 1 to 20+ paragraphs</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <PillGroup icon={<Clock className="h-4 w-4" />} label="Length" options={LENGTHS} value={length} onChange={setLength} />
+              <PillGroup icon={<Mic className="h-4 w-4" />} label="Voice" options={VOICES} value={voice} onChange={(v) => setVoice(v as VoiceGender)} />
+              <PillGroup icon={<Globe className="h-4 w-4" />} label="Accent" options={ACCENTS} value={accent} onChange={(v) => setAccent(v as Accent)} />
+              <PillGroup
+                icon={<Gauge className="h-4 w-4" />}
+                label="Speaking Speed"
+                options={SPEEDS}
+                value={speakingSpeed}
+                onChange={(v) => setSpeakingSpeed(v as "SLOW" | "NORMAL" | "FAST")}
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -372,7 +464,10 @@ export default function ListeningPage() {
           <Button variant="ghost" size="sm" className="gap-1.5" onClick={backToSetup}>
             <ArrowLeft className="h-4 w-4" /> New Exercise
           </Button>
-          <p className="text-xs text-muted-foreground">{cefrLevel} · {topic}</p>
+          <p className="text-xs text-muted-foreground">
+            {DIFFICULTY_LABELS[cefrLevel] ?? cefrLevel} ·{" "}
+            {EXAM_MODES.find((m) => m.value === examMode)?.label ?? examMode} · {topic}
+          </p>
         </div>
 
         <Card>
@@ -499,12 +594,48 @@ export default function ListeningPage() {
   );
 }
 
+function FieldLabel({ icon, text }: { icon?: ReactNode; text: string }) {
+  return (
+    <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold">
+      {icon}
+      {text}
+    </div>
+  );
+}
+
+function OptionCard({
+  active, onClick, icon, title, description,
+}: { active: boolean; onClick: () => void; icon: ReactNode; title: string; description: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex flex-col items-start gap-1.5 rounded-xl border p-3 text-left transition-colors",
+        active ? "border-primary bg-primary/5" : "hover:bg-accent"
+      )}
+    >
+      <span
+        className={cn(
+          "flex h-4 w-4 items-center justify-center rounded-full border",
+          active ? "border-primary bg-primary" : "border-muted-foreground/40"
+        )}
+      >
+        {active && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+      </span>
+      <span className={cn(active ? "text-primary" : "text-muted-foreground")}>{icon}</span>
+      <p className="text-sm font-semibold">{title}</p>
+      <p className="text-xs text-muted-foreground">{description}</p>
+    </button>
+  );
+}
+
 function PillGroup({
-  label, options, value, onChange,
-}: { label?: string; options: { value: string; label: string }[]; value: string; onChange: (v: string) => void }) {
+  icon, label, options, value, onChange,
+}: { icon?: ReactNode; label?: string; options: { value: string; label: string }[]; value: string; onChange: (v: string) => void }) {
   return (
     <div>
-      <Label className="mb-1.5 block">{label}</Label>
+      {(icon || label) && <FieldLabel icon={icon} text={label ?? ""} />}
       <div className="flex flex-wrap gap-1.5">
         {options.map((o) => (
           <PillButton key={o.value} active={value === o.value} onClick={() => onChange(o.value)}>{o.label}</PillButton>
@@ -514,17 +645,20 @@ function PillGroup({
   );
 }
 
-function PillButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+function PillButton({
+  active, onClick, children, showCheck,
+}: { active: boolean; onClick: () => void; children: ReactNode; showCheck?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+        "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
         active ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent"
       )}
     >
       {children}
+      {active && showCheck && <Check className="h-3 w-3" />}
     </button>
   );
 }

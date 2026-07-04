@@ -45,7 +45,7 @@ enum WordStatus {
 enum QuizType {
   MULTIPLE_CHOICE
   MATCHING
-  TYPING
+  MEANING
   SENTENCE
   LISTENING
 }
@@ -267,14 +267,14 @@ model DailyProgress {
 
   reviewCount   Int @default(0)
   listeningCount Int @default(0)
-  typingCount   Int @default(0)
+  meaningCount   Int @default(0)
   sentenceCount Int @default(0)
   newWordsCount Int @default(0)
   articlesRead  Int @default(0)
 
   reviewTarget   Int @default(20)
   listeningTarget Int @default(10)
-  typingTarget   Int @default(10)
+  meaningTarget   Int @default(10)
   sentenceTarget Int @default(5)
 
   userId String

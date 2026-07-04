@@ -231,13 +231,14 @@ export function useGenerateListeningExercise() {
     mutationFn: async (payload: {
       topic: string;
       cefrLevel: string;
-      paragraphs: number;
+      paragraphs: number | "AUTO";
       length: string;
       assessmentSkills: string[];
       testMode: "TRANSLATION" | "QUESTIONS";
       questionTypes: string[];
       numQuestions: number;
       targetLang: string;
+      examMode: string;
     }) =>
       (
         await api.post<{ source: string; exercise: ListeningExercise | null; note?: string }>(

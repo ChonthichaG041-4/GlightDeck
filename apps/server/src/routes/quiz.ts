@@ -9,7 +9,7 @@ function shuffle<T>(arr: T[]): T[] {
   return [...arr].sort(() => Math.random() - 0.5);
 }
 
-// GET /api/quiz/generate?type=MULTIPLE_CHOICE|MATCHING|TYPING|SENTENCE|LISTENING&limit=10
+// GET /api/quiz/generate?type=MULTIPLE_CHOICE|MATCHING|MEANING|SENTENCE|LISTENING&limit=10
 router.get("/generate", async (req, res) => {
   const user = getDbUser(req);
   const type = String(req.query.type ?? "MULTIPLE_CHOICE");
@@ -80,7 +80,7 @@ router.get("/generate", async (req, res) => {
 });
 
 const submitInput = z.object({
-  type: z.enum(["MULTIPLE_CHOICE", "MATCHING", "TYPING", "SENTENCE", "LISTENING"]),
+  type: z.enum(["MULTIPLE_CHOICE", "MATCHING", "MEANING", "SENTENCE", "LISTENING"]),
   score: z.number().int().min(0),
   total: z.number().int().min(1),
   wrongWordIds: z.array(z.string()).optional(),
@@ -103,11 +103,11 @@ router.post("/submit", async (req, res) => {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  if (type === "TYPING") {
+  if (type === "MEANING") {
     await prisma.dailyProgress.upsert({
       where: { userId_date: { userId: user.id, date: today } },
-      update: { typingCount: { increment: total } },
-      create: { userId: user.id, date: today, typingCount: total },
+      update: { meaningCount: { increment: total } },
+      create: { userId: user.id, date: today, meaningCount: total },
     });
   } else if (type === "SENTENCE") {
     await prisma.dailyProgress.upsert({

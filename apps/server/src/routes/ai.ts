@@ -288,20 +288,25 @@ async function verifyIpaWithDictionary(sourceLang: string, words: GeneratedWord[
  * for English source words. No free/offline generation fallback - see header comment above.
  */
 router.post("/generate-set", async (req, res) => {
-  const { topic, sourceLang, targetLangs, cefrLevel, style, scope, count } = generateSetInput.parse(req.body);
-  const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-
-  if (!geminiKey) {
-    return res.json({
-      source: "offline",
-      words: [],
-      note:
-        "ฟีเจอร์นี้ต้องใช้ Gemini API ในการสร้างชุดคำศัพท์ทั้งหมด (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์) " +
-        "ขอคีย์ฟรีได้ที่ aistudio.google.com/apikey แล้ววางใน apps/server/.env จากนั้นรีสตาร์ทเซิร์ฟเวอร์และลองใหม่อีกครั้ง",
-    });
-  }
-
+  // Everything - including request validation - lives inside this try/catch.
+  // Express 4 does NOT forward rejected promises from async handlers to the
+  // error middleware automatically, so a zod validation error thrown outside
+  // a try/catch here would leave the request hanging with no response at all
+  // instead of a clean JSON error. Keeping it all in one try/catch avoids that.
   try {
+    const { topic, sourceLang, targetLangs, cefrLevel, style, scope, count } = generateSetInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+
+    if (!geminiKey) {
+      return res.json({
+        source: "offline",
+        words: [],
+        note:
+          "ฟีเจอร์นี้ต้องใช้ Gemini API ในการสร้างชุดคำศัพท์ทั้งหมด (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์) " +
+          "ขอคีย์ฟรีได้ที่ aistudio.google.com/apikey แล้ววางใน apps/server/.env จากนั้นรีสตาร์ทเซิร์ฟเวอร์และลองใหม่อีกครั้ง",
+      });
+    }
+
     const sourceLangName = LANG_NAMES[sourceLang] ?? sourceLang;
     const targetLangNames = targetLangs.map((l) => LANG_NAMES[l] ?? l);
 
@@ -333,14 +338,27 @@ router.post("/generate-set", async (req, res) => {
       words,
       note: `สร้างด้วย Gemini 2.5 Flash · ระดับ ${cefrLevel} · รูปแบบ ${style} · ขอบเขต ${scope}`,
     });
-  } catch (err) {
-    console.error("Gemini generate-set failed", err);
+  } catch (err: any) {
+    // Log the REAL cause to the server terminal - the message sent to the client stays
+    // generic/Thai, but whoever is running the server can see exactly what broke.
+    console.error("Gemini generate-set failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+
+    if (err?.name === "ZodError") {
+      return res.status(400).json({
+        source: "offline",
+        words: [],
+        note: "ข้อมูลที่ส่งมาไม่ถูกต้อง (validation error) - ดู log ฝั่งเซิร์ฟเวอร์สำหรับรายละเอียด",
+      });
+    }
+
     return res.json({
       source: "offline",
       words: [],
       note:
         "สร้างชุดคำศัพท์ด้วย Gemini ไม่สำเร็จ (เชื่อมต่อ Gemini API ไม่ได้ หรือคีย์ไม่ถูกต้อง/หมดโควต้า) " +
-        "กรุณาตรวจสอบ GEMINI_API_KEY ในไฟล์ apps/server/.env แล้วลองใหม่อีกครั้ง — ฟีเจอร์นี้ไม่มีโหมดฟรีสำรองแล้ว",
+        "กรุณาตรวจสอบ GEMINI_API_KEY ในไฟล์ apps/server/.env แล้วลองใหม่อีกครั้ง — ฟีเจอร์นี้ไม่มีโหมดฟรีสำรองแล้ว " +
+        `[${err?.message ?? "unknown error"}]`,
     });
   }
 });

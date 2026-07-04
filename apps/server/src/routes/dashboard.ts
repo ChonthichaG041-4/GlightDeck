@@ -31,7 +31,7 @@ router.get("/home", async (req, res) => {
     dailyChallenge: {
       review: { done: progress?.reviewCount ?? 0, target: progress?.reviewTarget ?? 20 },
       listening: { done: progress?.listeningCount ?? 0, target: progress?.listeningTarget ?? 10 },
-      typing: { done: progress?.typingCount ?? 0, target: progress?.typingTarget ?? 10 },
+      meaning: { done: progress?.meaningCount ?? 0, target: progress?.meaningTarget ?? 10 },
       sentence: { done: progress?.sentenceCount ?? 0, target: progress?.sentenceTarget ?? 5 },
     },
     recentCollections: collections.map((c) => ({

@@ -95,7 +95,7 @@ export interface HomeSummary {
   listening: number;
   readingArticles: number;
   streak: number;
-  dailyChallenge: Record<"review" | "listening" | "typing" | "sentence", { done: number; target: number }>;
+  dailyChallenge: Record<"review" | "listening" | "meaning" | "sentence", { done: number; target: number }>;
   recentCollections: Collection[];
 }
 

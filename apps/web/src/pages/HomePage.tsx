@@ -74,7 +74,7 @@ export default function HomePage() {
                 [
                   ["Review", challenge.review],
                   ["Listening", challenge.listening],
-                  ["Typing", challenge.typing],
+                  ["Meaning", challenge.meaning],
                   ["Sentences", challenge.sentence],
                 ] as const
               ).map(([label, c]) => (

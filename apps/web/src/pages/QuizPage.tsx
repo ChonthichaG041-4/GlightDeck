@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 const TYPES = [
   { value: "MULTIPLE_CHOICE", label: "Multiple Choice" },
   { value: "MATCHING", label: "Matching" },
-  { value: "TYPING", label: "Typing" },
+  { value: "MEANING", label: "Meaning" },
   { value: "SENTENCE", label: "Sentence" },
   { value: "LISTENING", label: "Listening" },
 ];
@@ -121,7 +121,7 @@ function SequentialQuiz({ type, collectionId, wordIds }: { type: string; collect
           </>
         )}
 
-        {type === "TYPING" && (
+        {type === "MEANING" && (
           <>
             <p className="text-sm text-muted-foreground">Meaning</p>
             <h2 className="text-2xl font-bold">{q.prompt}</h2>
