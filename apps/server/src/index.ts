@@ -8,19 +8,28 @@ import { errorHandler, notFound } from "./middleware/errorHandler";
 
 const app = express();
 const PORT = process.env.PORT ?? 4000;
-const allowedOrigins = [
-  "http://localhost:5173",
-  "https://glight-deck-qytn5ophy-portfolio-chonthicha-leepreecha.vercel.app",
-];
+
+// CLIENT_ORIGIN can be a single URL or a comma-separated list (e.g. your stable
+// production domain plus any custom domains). Any Vercel preview deployment
+// (https://<project>-<hash>-<team>.vercel.app) is allowed automatically below,
+// since Vercel mints a brand-new hash on every preview deploy - hardcoding one
+// specific preview URL here would only work until the next deploy.
+const allowedOrigins = (process.env.CLIENT_ORIGIN ?? "http://localhost:5173")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
+      if (!origin) return callback(null, true); // same-origin, curl, server-to-server
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      try {
+        if (/\.vercel\.app$/i.test(new URL(origin).hostname)) return callback(null, true);
+      } catch {
+        // fall through to rejection below
       }
+      callback(new Error(`Not allowed by CORS: ${origin}`));
     },
     credentials: true,
   })
