@@ -227,18 +227,4 @@ function MatchingQuiz({ collectionId, wordIds }: { collectionId: string; wordIds
                   key={r.id}
                   disabled={matched.includes(r.id)}
                   className={cn(
-                    "w-full rounded-lg border p-3 text-left text-sm transition-colors",
-                    matched.includes(r.id) ? "opacity-30" : wrongFlash === r.id ? "border-destructive bg-destructive/10" : "hover:bg-accent"
-                  )}
-                  onClick={() => pickRight(r.id)}
-                >
-                  {r.text}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+ 

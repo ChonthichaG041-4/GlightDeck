@@ -96,34 +96,49 @@ npm run db:migrate
 Prisma will create a migration for the new `WordTranslation` table - no data
 is lost.
 
+## Dictionary data (Kaikki.org import)
+
+The Reading Workspace's double-click dictionary popup is powered by three
+layered sources, so real dictionary data always wins over AI: **Kaikki.org**
+(a Wiktionary extract - real IPA, real pronunciation audio, real
+synonyms/antonyms, and genuine Thai translations) first, then the free
+**Free Dictionary API** (`api.dictionaryapi.dev`, live, no key) if a word
+isn't in the Kaikki table, then **Gemini** to fill in whatever neither of
+those has (CEFR level, frequency rating, word family, example translation).
+
+The Free Dictionary API and Gemini need no setup beyond `GEMINI_API_KEY`
+(already required elsewhere). The Kaikki layer is **optional** - the popup
+works fine without it, just relying more on Gemini - but importing it gives
+noticeably better results (real audio, real Thai translations). To set it up:
+
+```bash
+cd apps/server
+npx prisma migrate deploy   # creates the DictionaryEntry table, if not already applied
+npm run db:import-kaikki    # or: npx tsx scripts/import-kaikki.ts
+```
+
+Things to know before running the full import:
+
+- **Source**: streams `kaikki.org-dictionary-English.jsonl` directly from
+  kaikki.org (~2.9GB) - nothing is saved to disk, but it does take a while
+  (well over an hour on a typical connection) and needs a real, non-sandboxed
+  network connection.
+- **Database storage**: expect roughly 1-2GB added to your Postgres database
+  once imported. Check your hosting plan's storage limit before running this
+  against a production database.
+- **Run it against `DATABASE_URL`** for whichever environment you want the
+  data in - locally, or against your deployed Railway/Render Postgres
+  instance (set `DATABASE_URL` in the shell before running the command).
+- **Dry run first**: `npx tsx scripts/import-kaikki.ts --limit 5000` processes
+  only the first 5,000 matching entries, so you can confirm it's working
+  before committing to the full pass.
+- It's safe to re-run (upserts by word+part-of-speech), so you can re-import
+  later to pick up a newer Wiktionary dump.
+
 ## Features
 
 - **Vocabulary**: personal dictionary with search, level (A1-C2), type, status and favorite filters; each word stores meaning, IPA, example + translation, synonym/opposite, frequency, and custom tags/collections
 - **Flashcards**: Anki-style spaced repetition (SM-2) with Again/Hard/Good/Easy grading; a "Smart Review" panel resurfaces words you keep getting wrong (4+ lapses)
 - **Listening**: multiple-choice and dictation modes using the browser's built-in text-to-speech
 - **Reading**: save articles by category (novels, game articles, news...) and tap any word while reading to see its meaning (via the AI assistant) and add it straight to your vocabulary
-- **Quiz**: multiple choice, matching, typing, sentence fill-in-the-blank, and listening quiz formats, all generated from your own word bank
-- **Statistics**: words learned/mastered/learning/forgotten, accuracy, streaks, and charts (Recharts)
-- **Collections & Tags**: organize words into custom decks (e.g. Fantasy, Business, Travel) and custom tags (e.g. IELTS, TOEIC, Anime)
-- **Word relationships**: mindmap-style synonym chains (e.g. happy → joy → cheerful → delighted → ecstatic)
-- **Bookmarked sentences**, **Daily Challenge** progress, and **Achievements** (streak/word-count badges)
-- **Import**: paste a word list or upload a CSV/TXT file to bulk-create flashcards
-- **AI Assistant**: ask "Explain 'Take off'" and get meaning / example / usage / contrast
-- **Multi-language auto-suggest**: when adding a word, pick a source language and one or more target languages - typing the word and hitting "Auto-suggest" fills in IPA, part of speech, CEFR level, and a translation per target language (via the same `ANTHROPIC_API_KEY`); every suggested field stays editable before saving
-- **Collections as study groups**: filter Vocabulary by collection, or jump straight into Flashcards / Listening / Quiz scoped to just that one group instead of your whole deck
-
-## Deployment
-
-- **Frontend** → [Vercel](https://vercel.com): set the root directory to `apps/web`, add the `VITE_*` env vars, build command `npm run build`, output directory `dist`.
-- **Backend + database** → [Railway](https://railway.app) or [Render](https://render.com): deploy `apps/server` as a Node service (`npm run build` then `npm start`), add a managed PostgreSQL instance, set the server env vars, and run `npx prisma migrate deploy` once against the production database.
-- Set `CLIENT_ORIGIN` on the server to your deployed frontend URL, and `VITE_API_URL` on the frontend to your deployed API URL.
-
-## Scripts (root)
-
-| Command | Description |
-|---|---|
-| `npm run dev` | Run frontend + backend together |
-| `npm run build` | Build both apps for production |
-| `npm run db:migrate` | Run Prisma migrations (dev) |
-| `npm run db:seed` | Seed demo data |
-| `npm run db:studio` | Open Prisma Studio |
+- **Quiz**: multiple choice, matching, typing, sentence fill-in-the-blank, and listening quiz formats, all generated from your own word b

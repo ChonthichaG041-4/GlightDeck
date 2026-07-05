@@ -123,16 +123,4 @@ export default function FlashcardsPage() {
           {ratingButtons.map((b) => (
             <button
               key={b.rating}
-              className={cn("rounded-lg py-3 text-sm font-semibold transition-transform active:scale-95", b.className)}
-              onClick={() => grade(b.rating)}
-            >
-              {b.label}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <Button size="lg" onClick={() => setFlipped(true)}>Flip</Button>
-      )}
-    </div>
-  );
-}
+              className={cn("r

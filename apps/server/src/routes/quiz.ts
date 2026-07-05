@@ -110,14 +110,4 @@ router.post("/submit", async (req, res) => {
       create: { userId: user.id, date: today, meaningCount: total },
     });
   } else if (type === "SENTENCE") {
-    await prisma.dailyProgress.upsert({
-      where: { userId_date: { userId: user.id, date: today } },
-      update: { sentenceCount: { increment: total } },
-      create: { userId: user.id, date: today, sentenceCount: total },
-    });
-  }
-
-  res.status(201).json(attempt);
-});
-
-export default router;
+    await prisma.dail

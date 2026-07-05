@@ -44,4 +44,4 @@ router.get("/home", async (req, res) => {
   });
 });
 
-export default router;
+export default route

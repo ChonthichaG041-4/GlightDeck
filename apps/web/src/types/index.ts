@@ -46,6 +46,7 @@ export interface Word {
   frequency: number;
   image?: string | null;
   audioUrl?: string | null;
+  note?: string | null;
   status: WordStatus;
   favorite: boolean;
   easeFactor: number;
@@ -110,5 +111,4 @@ export interface StatsSummary {
   currentStreak: number;
   longestStreak: number;
   reviewActivity: { date: string; count: number }[];
-  breakdown: { name: string; value: number }[];
-}
+  breakdown: { name: stri

@@ -79,32 +79,4 @@ router.post("/:wordId/review", async (req, res) => {
       easeFactor: result.easeFactor,
       intervalDays: result.intervalDays,
       repetitions: result.repetitions,
-      lapses: result.lapses,
-      status: result.status,
-      dueDate: result.dueDate,
-      lastReviewedAt: new Date(),
-    },
-  });
-
-  await prisma.reviewLog.create({
-    data: {
-      wordId: word.id,
-      userId: user.id,
-      rating,
-      intervalDays: result.intervalDays,
-      easeFactor: result.easeFactor,
-    },
-  });
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  await prisma.dailyProgress.upsert({
-    where: { userId_date: { userId: user.id, date: today } },
-    update: { reviewCount: { increment: 1 } },
-    create: { userId: user.id, date: today, reviewCount: 1 },
-  });
-
-  res.json(serializeWord(updated));
-});
-
-export default router;
+      lapse

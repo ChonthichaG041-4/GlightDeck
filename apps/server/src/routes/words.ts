@@ -23,6 +23,7 @@ const wordInput = z.object({
   frequency: z.number().int().min(1).max(5).default(3),
   image: z.string().optional(),
   audioUrl: z.string().optional(),
+  note: z.string().optional().nullable(),
   collectionId: z.string().optional().nullable(),
   tagIds: z.array(z.string()).optional(),
   translations: z.record(z.string(), z.string()).optional(), // { th: "...", ja: "..." }
@@ -222,8 +223,4 @@ export function serializeWord(word: any) {
   return {
     ...word,
     tags: word.tags?.map((wt: any) => wt.tag) ?? [],
-    isLeech: isLeech(word.lapses ?? 0),
-  };
-}
-
-export default router;
+    isLeech: isLeech(word.lap

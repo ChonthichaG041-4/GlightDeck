@@ -56,14 +56,4 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     {isValidClerkKey ? (
       <ClerkProvider publishableKey={clerkPubKey} signInUrl="/sign-in" signUpUrl="/sign-up">
-        <QueryClientProvider client={queryClient}>
-          <BrowserRouter>
-            <App />
-          </BrowserRouter>
-        </QueryClientProvider>
-      </ClerkProvider>
-    ) : (
-      <ClerkSetupNeeded />
-    )}
-  </StrictMode>
-);
+        <Query
