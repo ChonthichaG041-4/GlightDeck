@@ -540,7 +540,7 @@ export default function ReadingWorkspace({
   );
 }
 
-function ScrollTracker({ onScroll, scrollRef }: { onScroll: () => void; scrollRef: React.RefObject<HTMLDivElement> }) {
+function ScrollTracker({ onScroll, scrollRef }: { onScroll: () => void; scrollRef: React.RefObject<HTMLDivElement | null> }) {
   useEffect(() => {
     function handler() {
       // Track scroll progress against the whole document, since the passage
