@@ -4,6 +4,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { prisma } from "../db";
 import { getDbUser } from "../middleware/auth";
 import { LANG_NAMES } from "../lib/wordLookup";
+import { withGeminiRetry, friendlyGeminiError } from "../lib/gemini";
 
 const router = Router();
 
@@ -279,16 +280,18 @@ function buildResponseSchema(needsPassage: boolean, testMode: string) {
 
 async function callGemini(system: string, user: string, schema: any, apiKey: string): Promise<any> {
   const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: user,
-    config: {
-      systemInstruction: system,
-      responseMimeType: "application/json",
-      responseSchema: schema,
-      temperature: 0.6,
-    },
-  });
+  const response = await withGeminiRetry(() =>
+    ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: user,
+      config: {
+        systemInstruction: system,
+        responseMimeType: "application/json",
+        responseSchema: schema,
+        temperature: 0.6,
+      },
+    })
+  );
 
   const raw = response.text;
   if (!raw) throw new Error("Gemini returned an empty response");
@@ -428,10 +431,7 @@ router.post("/generate-exercise", async (req, res) => {
     return res.json({
       source: "offline",
       exercise: null,
-      note:
-        "สร้างบทอ่านด้วย Gemini ไม่สำเร็จ (เชื่อมต่อ Gemini API ไม่ได้ หรือคีย์ไม่ถูกต้อง/หมดโควต้า) " +
-        "กรุณาตรวจสอบ GEMINI_API_KEY ในไฟล์ apps/server/.env แล้วลองใหม่อีกครั้ง " +
-        `[${err?.message ?? "unknown error"}]`,
+      note: friendlyGeminiError(err, "สร้างบทอ่านด้วย Gemini"),
     });
   }
 });

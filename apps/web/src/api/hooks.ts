@@ -47,9 +47,12 @@ export function useCreateWord() {
 export function useUpdateWord() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...payload }: Partial<Word> & { id: string }) =>
+    mutationFn: async ({ id, ...payload }: Partial<Word> & { id: string; collectionId?: string | null }) =>
       (await api.patch<Word>(`/words/${id}`, payload)).data,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["words"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["words"] });
+      qc.invalidateQueries({ queryKey: ["collections"] }); // wordCount per collection may have changed
+    },
   });
 }
 

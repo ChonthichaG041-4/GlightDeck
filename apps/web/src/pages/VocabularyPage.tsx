@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Plus, Search, Star, Volume2, Upload, Trash2, Sparkles, Layers, Headphones, ListChecks, Pencil, Folder, Wand2, X, CheckSquare, Square } from "lucide-react";
+import {
+  Plus, Search, Star, Volume2, Upload, Trash2, Sparkles, Layers, Headphones, ListChecks, Pencil, Folder, FolderPlus,
+  Wand2, X, Check, MoreHorizontal, Book, Sun, Cloud, CloudRain, CloudSun, Wind, Snowflake, Thermometer,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import {
   useWords, useCollections, useTags, useToggleFavorite, useCreateWord, useUpdateWord, useDeleteWord, useImportPaste,
   useWordRelations, useWordLookup, useSentences, useCreateSentence, useGenerateWordSet, useBulkCreateWords,
-  type GeneratedWordItem,
+  useCreateCollection, type GeneratedWordItem,
 } from "@/api/hooks";
 import { speak } from "@/lib/tts";
 import { ManageDialog } from "@/components/layout/ManageDialog";
@@ -32,6 +35,51 @@ const statusColor: Record<string, string> = {
   MASTERED: "success",
 };
 
+const LEVEL_BADGE_COLORS: Record<string, string> = {
+  A1: "bg-blue-100 text-blue-700",
+  A2: "bg-emerald-100 text-emerald-700",
+  B1: "bg-violet-100 text-violet-700",
+  B2: "bg-orange-100 text-orange-700",
+  C1: "bg-pink-100 text-pink-700",
+  C2: "bg-red-100 text-red-700",
+};
+
+// Word-card icon avatar: a handful of words get a topically-matched icon (mostly useful
+// for weather/temperature-style vocabulary sets), everything else gets a colorful icon
+// deterministically picked from the headword so every card still looks lively and varied.
+const WORD_ICON_RULES: { match: RegExp; icon: typeof Book; bg: string; fg: string }[] = [
+  { match: /\b(sun|sunny)\b/i, icon: Sun, bg: "bg-amber-100", fg: "text-amber-600" },
+  { match: /\b(rain|rainy|shower)\b/i, icon: CloudRain, bg: "bg-sky-100", fg: "text-sky-600" },
+  { match: /\b(cloud|cloudy)\b/i, icon: Cloud, bg: "bg-blue-100", fg: "text-blue-500" },
+  { match: /\b(wind|windy)\b/i, icon: Wind, bg: "bg-teal-100", fg: "text-teal-600" },
+  { match: /\b(snow|snowy)\b/i, icon: Snowflake, bg: "bg-cyan-100", fg: "text-cyan-600" },
+  { match: /\b(hot|warm)\b/i, icon: Thermometer, bg: "bg-red-100", fg: "text-red-500" },
+  { match: /\b(cold|cool|chilly)\b/i, icon: Thermometer, bg: "bg-sky-100", fg: "text-sky-600" },
+  { match: /\b(degrees?|celsius|fahrenheit|temperature)\b/i, icon: Thermometer, bg: "bg-rose-100", fg: "text-rose-600" },
+  { match: /\b(weather|storm|climate)\b/i, icon: CloudSun, bg: "bg-indigo-100", fg: "text-indigo-600" },
+];
+
+const FALLBACK_ICON_PALETTE: { icon: typeof Book; bg: string; fg: string }[] = [
+  { icon: Book, bg: "bg-violet-100", fg: "text-violet-600" },
+  { icon: Sparkles, bg: "bg-pink-100", fg: "text-pink-600" },
+  { icon: Star, bg: "bg-amber-100", fg: "text-amber-600" },
+  { icon: Cloud, bg: "bg-blue-100", fg: "text-blue-500" },
+  { icon: Book, bg: "bg-emerald-100", fg: "text-emerald-600" },
+  { icon: Sparkles, bg: "bg-orange-100", fg: "text-orange-600" },
+];
+
+function hashString(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+function getWordIcon(headword: string) {
+  const rule = WORD_ICON_RULES.find((r) => r.match.test(headword));
+  if (rule) return rule;
+  return FALLBACK_ICON_PALETTE[hashString(headword) % FALLBACK_ICON_PALETTE.length];
+}
+
 export default function VocabularyPage() {
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState(params.get("search") ?? "");
@@ -42,6 +90,12 @@ export default function VocabularyPage() {
   const [collectionId, setCollectionId] = useState(params.get("collectionId") ?? "ALL");
   const [selected, setSelected] = useState<Word | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+
+  // Gallery-mode "jump to word" search: typing a word here (while browsing the
+  // Collections gallery) opens the collection that contains it and highlights the card.
+  const [gallerySearch, setGallerySearch] = useState("");
+  const [highlightWordId, setHighlightWordId] = useState<string | null>(null);
 
   // "ALL" = collections gallery (click a card to drill into its words).
   // "ALL_WORDS" = flat list of every word, no collection grouping.
@@ -64,6 +118,8 @@ export default function VocabularyPage() {
   function changeCollection(v: string) {
     setCollectionId(v);
     setSelectedIds(new Set());
+    setLastSelectedIndex(null);
+    setHighlightWordId(null);
     setParams((p) => {
       if (v === "ALL") p.delete("collectionId");
       else p.set("collectionId", v);
@@ -71,13 +127,35 @@ export default function VocabularyPage() {
     });
   }
 
-  function toggleSelect(id: string) {
+  // Plain click toggles just this word; shift-click selects the whole range between
+  // the last clicked card and this one (standard file-explorer-style multi-select).
+  function handleSelectClick(id: string, index: number, shiftKey: boolean) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (shiftKey && lastSelectedIndex !== null && words) {
+        const [start, end] = lastSelectedIndex < index ? [lastSelectedIndex, index] : [index, lastSelectedIndex];
+        for (let i = start; i <= end; i++) {
+          const wid = words[i]?.id;
+          if (wid) next.add(wid);
+        }
+      } else if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
+    setLastSelectedIndex(index);
+  }
+
+  // Gallery search: as the user types a word, jump straight into whichever
+  // collection contains it (or "All words" if it has none) and highlight the card.
+  function goToWordFromGallerySearch(matches: Word[] | undefined) {
+    const term = gallerySearch.trim();
+    if (!term || !matches?.length) return;
+    const match = matches[0];
+    changeCollection(match.collection?.id ?? "ALL_WORDS");
+    setHighlightWordId(match.id);
   }
 
   // Unchecked = practice the whole current group; checked = practice just those words.
@@ -93,6 +171,88 @@ export default function VocabularyPage() {
   const { data: tags } = useTags();
   const toggleFavorite = useToggleFavorite();
   const deleteWord = useDeleteWord();
+  const updateWord = useUpdateWord();
+
+  const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  const allSelected = !!words?.length && words.every((w) => selectedIds.has(w.id));
+
+  function toggleSelectAll() {
+    if (!words?.length) return;
+    setSelectedIds(allSelected ? new Set() : new Set(words.map((w) => w.id)));
+    setLastSelectedIndex(null);
+  }
+
+  // Picking a collection from the dropdown moves the current selection right away -
+  // there's no separate confirm button. The trigger label itself doubles as the
+  // status: "Move" while idle, "Move to Collection..." while the request is in flight.
+  async function moveSelectedToCollection(target: string) {
+    if (!target || selectedIds.size === 0) return;
+    setMoving(true);
+    setMoveError(null);
+    const ids = Array.from(selectedIds);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) =>
+          updateWord.mutateAsync({ id, collectionId: target === "NONE" ? null : target })
+        )
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      if (failed.length) {
+        // Log the real cause (e.g. server validation/auth error) so it's easy to diagnose,
+        // instead of silently doing nothing like before.
+        console.error("Move to collection failed for some words:", failed);
+      }
+      // Only drop the words that actually moved out of the current selection - if some
+      // failed, they stay selected so the user can see + retry just those.
+      const succeededIds = ids.filter((_, i) => results[i].status === "fulfilled");
+      if (succeededIds.length) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          succeededIds.forEach((id) => next.delete(id));
+          return next;
+        });
+      }
+      if (failed.length) {
+        setMoveError(
+          failed.length === ids.length
+            ? "ย้ายคำศัพท์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง"
+            : `ย้ายสำเร็จ ${succeededIds.length}/${ids.length} คำ - ที่เหลือย้ายไม่สำเร็จ กรุณาลองใหม่`
+        );
+      } else {
+        setLastSelectedIndex(null);
+      }
+    } finally {
+      setMoving(false);
+    }
+  }
+
+  const gallerySearchTerm = gallerySearch.trim();
+  const { data: gallerySearchResults } = useWords(gallerySearchTerm ? { search: gallerySearchTerm } : {});
+
+  // Auto-jump a moment after the user stops typing (2+ characters), so it doesn't
+  // fire away mid-word - Enter (see the input below) still jumps immediately too.
+  useEffect(() => {
+    if (!isGallery || gallerySearchTerm.length < 2) return;
+    const t = setTimeout(() => goToWordFromGallerySearch(gallerySearchResults), 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGallery, gallerySearchTerm, gallerySearchResults]);
+
+  // Fade the "you searched for this" highlight out after a few seconds.
+  useEffect(() => {
+    if (!highlightWordId) return;
+    const t = setTimeout(() => setHighlightWordId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightWordId]);
+
+  // Scroll the highlighted card into view once its collection's words have loaded.
+  useEffect(() => {
+    if (!highlightWordId) return;
+    const el = document.getElementById(`word-${highlightWordId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightWordId, words]);
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -108,7 +268,8 @@ export default function VocabularyPage() {
         <div className="flex gap-2">
           <ManageDialog />
           <ImportDialog collections={collections} />
-          <GenerateSetDialog collections={collections} />
+          <GenerateSetDialog collections={collections} onSaved={(cid) => changeCollection(cid ?? "ALL_WORDS")} />
+          <AddCollectionDialog />
           <AddWordDialog collections={collections} tags={tags} />
         </div>
       </div>
@@ -129,6 +290,19 @@ export default function VocabularyPage() {
                     return p;
                   });
                 }}
+              />
+            </div>
+          )}
+
+          {isGallery && (
+            <div className="relative min-w-[220px] flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="pl-9"
+                placeholder="Search a word to jump to its collection..."
+                value={gallerySearch}
+                onChange={(e) => setGallerySearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") goToWordFromGallerySearch(gallerySearchResults); }}
               />
             </div>
           )}
@@ -194,7 +368,7 @@ export default function VocabularyPage() {
           ))}
           {!collections?.length && (
             <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
-              No collections yet. Click "Manage" to create one, or add a word and assign it to a new collection.
+              No collections yet. Click "Add Collection" above to create your first one.
             </p>
           )}
         </div>
@@ -202,11 +376,42 @@ export default function VocabularyPage() {
         <>
           <Card className="border-primary/30 bg-primary/5">
             <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-              <p className="flex items-center gap-2 text-sm font-medium">
-                <Sparkles className="h-4 w-4 text-primary" />
-                {selectedIds.size > 0 ? `Practice ${selectedIds.size} selected word(s)` : "Practice this group"}
-              </p>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={toggleSelectAll}
+                  disabled={!words?.length}
+                  className="flex items-center gap-1.5 text-sm font-medium disabled:opacity-50"
+                >
+                  <span
+                    className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${
+                      allSelected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"
+                    }`}
+                  >
+                    {allSelected && <Check className="h-3 w-3" />}
+                  </span>
+                  Select All
+                </button>
+                <p className="flex items-center gap-2 text-sm font-medium">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  {selectedIds.size > 0 ? `Practice ${selectedIds.size} selected word(s)` : "Practice this group"}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select
+                  value=""
+                  onValueChange={moveSelectedToCollection}
+                  disabled={selectedIds.size === 0 || moving}
+                >
+                  <SelectTrigger className="w-44 gap-1.5">
+                    <FolderPlus className="h-3.5 w-3.5 shrink-0" />
+                    <SelectValue placeholder={moving ? "Move to Collection..." : "Move"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="NONE">No Collection</SelectItem>
+                    {collections?.map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <Button asChild size="sm" variant="outline" className="gap-1.5">
                   <Link to={`/flashcards?${practiceQuery()}`}><Layers className="h-3.5 w-3.5" /> Flashcards</Link>
                 </Button>
@@ -217,6 +422,9 @@ export default function VocabularyPage() {
                   <Link to={`/quiz?${practiceQuery()}`}><ListChecks className="h-3.5 w-3.5" /> Quiz</Link>
                 </Button>
               </div>
+              {moveError && (
+                <p className="w-full text-xs font-medium text-destructive">{moveError}</p>
+              )}
             </CardContent>
           </Card>
 
@@ -224,58 +432,100 @@ export default function VocabularyPage() {
             <p className="text-sm text-muted-foreground">Loading...</p>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {words?.map((w) => (
-                <Card key={w.id} className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => setSelected(w)}>
-                  <CardContent className="p-4">
-                    <div className="mb-2 flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleSelect(w.id);
-                          }}
-                          className="shrink-0"
-                          title="Select for practice"
-                        >
-                          {selectedIds.has(w.id) ? (
-                            <CheckSquare className="h-4 w-4 text-primary" />
-                          ) : (
-                            <Square className="h-4 w-4 text-muted-foreground" />
-                          )}
-                        </button>
-                        <span className="text-xl">{w.image}</span>
-                        <div>
-                          <p className="font-semibold">{w.headword}</p>
-                          <p className="text-xs text-muted-foreground">{w.ipa}</p>
+              {words?.map((w, i) => {
+                const wordIcon = getWordIcon(w.headword);
+                const WordIcon = wordIcon.icon;
+                const isSelected = selectedIds.has(w.id);
+                return (
+                  <Card
+                    key={w.id}
+                    id={`word-${w.id}`}
+                    className={`cursor-pointer transition-shadow hover:shadow-md ${
+                      isSelected
+                        ? "border-primary ring-2 ring-primary bg-primary/5"
+                        : highlightWordId === w.id
+                          ? "border-amber-400 ring-2 ring-amber-400"
+                          : ""
+                    }`}
+                    onClick={() => setSelected(w)}
+                  >
+                    <CardContent className="p-4">
+                      <div className="mb-2 flex items-start justify-between">
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSelectClick(w.id, i, e.shiftKey);
+                            }}
+                            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors ${
+                              isSelected ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/40"
+                            }`}
+                            title="Select for practice (shift-click to select a range)"
+                          >
+                            {isSelected && <Check className="h-3.5 w-3.5" />}
+                          </button>
+                          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${wordIcon.bg}`}>
+                            <WordIcon className={`h-5 w-5 ${wordIcon.fg}`} />
+                          </div>
+                          <div>
+                            <p className="font-semibold">{w.headword}</p>
+                            <p className="text-xs text-muted-foreground">{w.ipa}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={statusColor[w.status] as any}>{w.status}</Badge>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleFavorite.mutate(w.id);
+                            }}
+                          >
+                            <Star className={`h-4 w-4 ${w.favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground"}`} />
+                          </button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Badge variant={statusColor[w.status] as any}>{w.status}</Badge>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleFavorite.mutate(w.id);
-                          }}
-                        >
-                          <Star className={`h-4 w-4 ${w.favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground"}`} />
-                        </button>
+                      <p className="mb-3 text-sm">{w.meaning}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${LEVEL_BADGE_COLORS[w.level] ?? "bg-muted text-muted-foreground"}`}>
+                            {w.level}
+                          </span>
+                          {w.collection && (
+                            <Badge variant="secondary" className="gap-1">
+                              <span>{w.collection.icon ?? <Folder className="h-3 w-3" />}</span> {w.collection.name}
+                            </Badge>
+                          )}
+                          {w.tags.slice(0, 2).map((t) => (
+                            <Badge key={t.id} variant="secondary">{t.name}</Badge>
+                          ))}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              speak(w.headword);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-accent hover:text-foreground"
+                            title="Pronounce"
+                          >
+                            <Volume2 className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelected(w);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-accent hover:text-foreground"
+                            title="More options"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    <p className="mb-2 text-sm">{w.meaning}</p>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Badge variant="outline">{w.level}</Badge>
-                      {w.collection && (
-                        <Badge variant="secondary" className="gap-1">
-                          <span>{w.collection.icon ?? <Folder className="h-3 w-3" />}</span> {w.collection.name}
-                        </Badge>
-                      )}
-                      {w.tags.slice(0, 2).map((t) => (
-                        <Badge key={t.id} variant="secondary">{t.name}</Badge>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                    </CardContent>
+                  </Card>
+                );
+              })}
               {words?.length === 0 && (
                 <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
                   No words found. Try adjusting filters or add your first word.
@@ -735,6 +985,94 @@ function AddWordDialog({ collections, tags }: { collections?: any[]; tags?: any[
   );
 }
 
+const COLLECTION_ICON_PRESETS = ["📚", "📖", "✈️", "💼", "🍜", "🎮", "🎬", "🌦️", "💬", "📝", "🏋️", "🎵"];
+
+function AddCollectionDialog() {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState("📚");
+  const [error, setError] = useState<string | null>(null);
+  const createCollection = useCreateCollection();
+
+  function reset() {
+    setName("");
+    setIcon("📚");
+    setError(null);
+  }
+
+  function submit() {
+    if (!name.trim()) {
+      setError("Enter a name for the collection.");
+      return;
+    }
+    setError(null);
+    createCollection.mutate(
+      { name: name.trim(), icon: icon.trim() || "📚" },
+      {
+        onSuccess: () => { setOpen(false); reset(); },
+        onError: (err: any) => setError(err?.response?.data?.error ?? "Could not create this collection. Please try again."),
+      }
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset(); }}>
+      <DialogTrigger asChild>
+        <Button variant="outline" className="gap-2">
+          <FolderPlus className="h-4 w-4" /> Add Collection
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add a new collection</DialogTitle>
+          <DialogDescription>Group your vocabulary by topic, e.g. "Weather", "Travel", "Business".</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label>Name</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder='e.g. "Weather", "Fantasy", "Business"'
+              onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+              autoFocus
+            />
+          </div>
+          <div>
+            <Label className="mb-1.5 block">Icon</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {COLLECTION_ICON_PRESETS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => setIcon(emoji)}
+                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-lg transition-colors ${
+                    icon === emoji ? "border-primary bg-primary/10" : "hover:bg-accent"
+                  }`}
+                >
+                  {emoji}
+                </button>
+              ))}
+              <Input
+                value={icon}
+                onChange={(e) => setIcon(e.target.value)}
+                className="w-16 text-center text-lg"
+                maxLength={4}
+              />
+            </div>
+          </div>
+
+          {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+
+          <Button className="w-full" onClick={submit} disabled={createCollection.isPending}>
+            {createCollection.isPending ? "Creating..." : "Create collection"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ImportDialog({ collections }: { collections?: any[] }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("apple\norange\nbanana\ngrape");
@@ -781,7 +1119,7 @@ function ImportDialog({ collections }: { collections?: any[] }) {
 
 const GENERATE_TYPES = ["NOUN", "VERB", "ADJECTIVE", "ADVERB", "IDIOM", "SLANG", "PHRASE", "PREPOSITION", "CONJUNCTION", "PRONOUN", "OTHER"];
 
-function GenerateSetDialog({ collections }: { collections?: any[] }) {
+function GenerateSetDialog({ collections, onSaved }: { collections?: any[]; onSaved?: (collectionId: string | null) => void }) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"setup" | "review">("setup");
 
@@ -895,7 +1233,12 @@ function GenerateSetDialog({ collections }: { collections?: any[] }) {
         })),
       },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
+          // Words are only visible in the Vocabulary page's default "Collections" gallery
+          // view if they belong to a collection - jump straight to where they actually
+          // landed (the new/existing collection, or the flat "All Words" list if none
+          // was chosen) so saving doesn't look like it silently did nothing.
+          onSaved?.(data.collectionId ?? null);
           setOpen(false);
           resetAll();
         },

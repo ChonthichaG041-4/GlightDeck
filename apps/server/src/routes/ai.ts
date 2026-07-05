@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { GoogleGenAI, Type } from "@google/genai";
 import { LANG_NAMES, WORD_TYPES, freeDictionaryLookup } from "../lib/wordLookup";
+import { withGeminiRetry, friendlyGeminiError } from "../lib/gemini";
 
 const router = Router();
 
@@ -244,16 +245,18 @@ function buildResponseSchema(targetLangs: string[]) {
 
 async function callGemini(system: string, user: string, schema: any, apiKey: string): Promise<any> {
   const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: user,
-    config: {
-      systemInstruction: system,
-      responseMimeType: "application/json",
-      responseSchema: schema,
-      temperature: 0.4,
-    },
-  });
+  const response = await withGeminiRetry(() =>
+    ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: user,
+      config: {
+        systemInstruction: system,
+        responseMimeType: "application/json",
+        responseSchema: schema,
+        temperature: 0.4,
+      },
+    })
+  );
 
   const raw = response.text;
   if (!raw) throw new Error("Gemini returned an empty response");
@@ -355,10 +358,7 @@ router.post("/generate-set", async (req, res) => {
     return res.json({
       source: "offline",
       words: [],
-      note:
-        "สร้างชุดคำศัพท์ด้วย Gemini ไม่สำเร็จ (เชื่อมต่อ Gemini API ไม่ได้ หรือคีย์ไม่ถูกต้อง/หมดโควต้า) " +
-        "กรุณาตรวจสอบ GEMINI_API_KEY ในไฟล์ apps/server/.env แล้วลองใหม่อีกครั้ง — ฟีเจอร์นี้ไม่มีโหมดฟรีสำรองแล้ว " +
-        `[${err?.message ?? "unknown error"}]`,
+      note: friendlyGeminiError(err, "สร้างชุดคำศัพท์ด้วย Gemini"),
     });
   }
 });
@@ -403,25 +403,27 @@ Explain this sentence for a ${targetLangName}-speaking English learner. Reply wi
 - naturalTranslation: a natural, fluent translation into ${targetLangName}.
 - literalTranslation: a literal, word-for-word (or close to it) translation into ${targetLangName}, to help the learner see how the English maps across.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: "You are an experienced ESL teacher explaining sentences to a learner.",
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            grammar: { type: Type.STRING },
-            vocabulary: { type: Type.STRING },
-            naturalTranslation: { type: Type.STRING },
-            literalTranslation: { type: Type.STRING },
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: "You are an experienced ESL teacher explaining sentences to a learner.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              grammar: { type: Type.STRING },
+              vocabulary: { type: Type.STRING },
+              naturalTranslation: { type: Type.STRING },
+              literalTranslation: { type: Type.STRING },
+            },
+            required: ["grammar", "vocabulary", "naturalTranslation", "literalTranslation"],
           },
-          required: ["grammar", "vocabulary", "naturalTranslation", "literalTranslation"],
+          temperature: 0.4,
         },
-        temperature: 0.4,
-      },
-    });
+      })
+    );
 
     const raw = response.text;
     if (!raw) throw new Error("Gemini returned an empty response");
@@ -438,7 +440,7 @@ Explain this sentence for a ${targetLangName}-speaking English learner. Reply wi
     return res.json({
       source: "offline",
       result: null,
-      note: `อธิบายประโยคไม่สำเร็จ [${err?.message ?? "unknown error"}]`,
+      note: friendlyGeminiError(err, "อธิบายประโยค"),
     });
   }
 });
@@ -478,14 +480,16 @@ router.post("/writing-assist", async (req, res) => {
     }
 
     const ai = new GoogleGenAI({ apiKey: geminiKey });
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `${INSTRUCTION_PROMPTS[instruction]}\n\nParagraph:\n${paragraph}`,
-      config: {
-        systemInstruction: "You are a skilled writing assistant helping an author draft a reading-practice passage for English learners.",
-        temperature: 0.6,
-      },
-    });
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `${INSTRUCTION_PROMPTS[instruction]}\n\nParagraph:\n${paragraph}`,
+        config: {
+          systemInstruction: "You are a skilled writing assistant helping an author draft a reading-practice passage for English learners.",
+          temperature: 0.6,
+        },
+      })
+    );
 
     const text = (response.text ?? "").trim();
     if (!text) throw new Error("Gemini returned an empty response");
@@ -501,7 +505,7 @@ router.post("/writing-assist", async (req, res) => {
     return res.json({
       source: "offline",
       text: null,
-      note: `ช่วยเขียนไม่สำเร็จ [${err?.message ?? "unknown error"}]`,
+      note: friendlyGeminiError(err, "ช่วยเขียน"),
     });
   }
 });
