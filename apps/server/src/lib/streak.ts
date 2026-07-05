@@ -10,11 +10,20 @@ function startOfDay(d: Date): Date {
 export async function touchStreak(userId: string): Promise<{ current: number; longest: number }> {
   const today = startOfDay(new Date());
 
-  await prisma.streakLog.upsert({
-    where: { userId_date: { userId, date: today } },
-    update: {},
-    create: { userId, date: today },
-  });
+  try {
+    await prisma.streakLog.upsert({
+      where: { userId_date: { userId, date: today } },
+      update: {},
+      create: { userId, date: today },
+    });
+  } catch (err: any) {
+    // Concurrent requests (e.g. several API calls firing on page load) can both
+    // race past the "row doesn't exist yet" check and try to create today's
+    // streak row at the same time. One wins, the other gets a unique constraint
+    // violation on (userId, date) — that's fine, it just means today is already
+    // recorded, so ignore it. Anything else should still bubble up.
+    if (err?.code !== "P2002") throw err;
+  }
 
   const logs = await prisma.streakLog.findMany({
     where: { userId },

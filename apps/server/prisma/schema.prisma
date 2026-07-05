@@ -57,6 +57,12 @@ enum ReviewRating {
   EASY
 }
 
+enum ArticleVisibility {
+  PRIVATE
+  PUBLIC
+  UNLISTED
+}
+
 // ---------- Core models ----------
 
 model User {
@@ -81,6 +87,13 @@ model User {
   achievements  UserAchievement[]
   dailyProgress DailyProgress[]
   streakLogs    StreakLog[]
+
+  highlights        Highlight[]
+  notes             Note[]
+  readingBookmarks  ReadingBookmark[]
+  articleLikes      ArticleLike[]
+  articleAttempts   ArticleAttempt[]
+  articleRatings    ArticleRating[]
 }
 
 model Collection {
@@ -227,10 +240,126 @@ model Article {
   source    String?
   createdAt DateTime @default(now())
 
+  // AI-generated / Create Mode reading-passage fields (all optional - the older
+  // paste-your-own-text "My Articles" flow leaves these null).
+  translation   String?           @db.Text
+  questionsJson Json?
+  examMode      String?
+  cefrLevel     String?
+  testMode      String?
+  visibility    ArticleVisibility @default(PRIVATE)
+  viewCount     Int               @default(0)
+
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  highlights       Highlight[]
+  notes            Note[]
+  readingBookmarks ReadingBookmark[]
+  likes            ArticleLike[]
+  attempts         ArticleAttempt[]
+  ratings          ArticleRating[]
+
   @@index([userId])
+  @@index([visibility])
+}
+
+// A user's saved text-selection highlight within a passage. Offsets are plain
+// character offsets into Article.content (client computes them from the
+// rendered text, since the passage is plain text without any markup).
+model Highlight {
+  id          String   @id @default(cuid())
+  text        String
+  startOffset Int
+  endOffset   Int
+  color       String   @default("#fde68a")
+  createdAt   DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([articleId, userId])
+}
+
+// A free-form note attached to a spot in the passage (from the floating
+// selection toolbar's "Add Note").
+model Note {
+  id           String   @id @default(cuid())
+  text         String
+  anchorText   String?
+  anchorOffset Int?
+  createdAt    DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([articleId, userId])
+}
+
+// Named ReadingBookmark (not just "Bookmark") to avoid clashing with any
+// future generic bookmark concept - this one is specifically a saved spot
+// within a Reading passage.
+model ReadingBookmark {
+  id           String   @id @default(cuid())
+  anchorText   String?
+  anchorOffset Int?
+  createdAt    DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, userId, anchorOffset])
+}
+
+model ArticleLike {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, userId])
+}
+
+model ArticleAttempt {
+  id        String   @id @default(cuid())
+  score     Int
+  total     Int
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([articleId])
+}
+
+model ArticleRating {
+  id        String   @id @default(cuid())
+  rating    Int
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, userId])
 }
 
 model SentenceBookmark {

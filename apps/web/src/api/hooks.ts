@@ -282,6 +282,245 @@ export function useMarkArticleRead() {
   });
 }
 
+// ---------- AI reading-exercise generator (custom Reading practice builder) ----------
+export interface ReadingQuestion {
+  type: "MULTIPLE_CHOICE" | "TRUE_FALSE" | "YES_NO_NOTGIVEN" | "FILL_BLANK" | "SHORT_ANSWER";
+  skill: string;
+  prompt: string;
+  options: string[];
+  answer: string;
+}
+
+export interface ReadingExercise {
+  title: string;
+  passage: string;
+  translation?: string;
+  questions?: ReadingQuestion[];
+}
+
+export function useGenerateReadingExercise() {
+  return useMutation({
+    mutationFn: async (payload: {
+      topic: string;
+      passageSource: string;
+      manualText: string;
+      cefrLevel: string;
+      examMode: string;
+      length: string;
+      customWordCount: number;
+      styles: string[];
+      vocabLevel: string;
+      grammarFocus: string[];
+      readingSkills: string[];
+      testMode: string;
+      questionTypes: string[];
+      numQuestions: number;
+      targetLang: string;
+    }) =>
+      (
+        await api.post<{ source: string; exercise: ReadingExercise | null; articleId?: string; note?: string }>(
+          "/reading/generate-exercise",
+          payload
+        )
+      ).data,
+  });
+}
+
+export function useSubmitReadingAttempt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { correctCount: number; totalCount: number; articleId?: string }) =>
+      (await api.post("/reading/attempt", payload)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["home"] }),
+  });
+}
+
+// ---------- Reading Workspace + Create Mode + Community ----------
+export interface PassageStats {
+  views: number;
+  likes: number;
+  liked: boolean;
+  attempts: number;
+  avgScorePercent: number | null;
+  avgRating: number | null;
+  ratingCount: number;
+  myRating: number | null;
+}
+
+export interface HighlightItem {
+  id: string;
+  text: string;
+  startOffset: number;
+  endOffset: number;
+  color: string;
+  createdAt: string;
+}
+
+export interface NoteItem {
+  id: string;
+  text: string;
+  anchorText?: string | null;
+  anchorOffset?: number | null;
+  createdAt: string;
+}
+
+export interface BookmarkItem {
+  id: string;
+  anchorText?: string | null;
+  anchorOffset?: number | null;
+  createdAt: string;
+}
+
+export interface PassageDetail {
+  id: string;
+  title: string;
+  category: string;
+  content: string;
+  translation?: string | null;
+  questions: ReadingQuestion[] | null;
+  examMode?: string | null;
+  cefrLevel?: string | null;
+  testMode?: string | null;
+  visibility: "PRIVATE" | "PUBLIC" | "UNLISTED";
+  viewCount: number;
+  createdAt: string;
+  authorId: string;
+  authorName: string;
+  isOwner: boolean;
+  stats: PassageStats;
+  highlights: HighlightItem[];
+  notes: NoteItem[];
+  bookmarks: BookmarkItem[];
+}
+
+export function usePassage(id: string | undefined) {
+  return useQuery({
+    queryKey: ["passage", id],
+    queryFn: async () => (await api.get<PassageDetail>(`/reading/passages/${id}`)).data,
+    enabled: !!id,
+  });
+}
+
+export function useUpdatePassage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...payload }: { id: string; title?: string; content?: string; questions?: any[]; visibility?: string }) =>
+      (await api.patch<{ id: string; visibility: string }>(`/reading/passages/${id}`, payload)).data,
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["passage", vars.id] });
+      qc.invalidateQueries({ queryKey: ["community"] });
+    },
+  });
+}
+
+export function useCreatePassage() {
+  return useMutation({
+    mutationFn: async (payload: { title: string; content: string; category?: string; questions?: any[] }) =>
+      (await api.post<{ id: string }>("/reading/passages", payload)).data,
+  });
+}
+
+export function useCommunityPassages() {
+  return useQuery({
+    queryKey: ["community"],
+    queryFn: async () => (await api.get<PassageDetail[]>("/reading/community")).data,
+  });
+}
+
+export function useCreateHighlight() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ articleId, ...payload }: { articleId: string; text: string; startOffset: number; endOffset: number; color?: string }) =>
+      (await api.post<HighlightItem>(`/reading/passages/${articleId}/highlights`, payload)).data,
+    onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
+  });
+}
+
+export function useDeleteHighlight() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, articleId }: { id: string; articleId: string }) => {
+      await api.delete(`/reading/highlights/${id}`);
+      return { articleId };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ["passage", data.articleId] }),
+  });
+}
+
+export function useCreateNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ articleId, ...payload }: { articleId: string; text: string; anchorText?: string; anchorOffset?: number }) =>
+      (await api.post<NoteItem>(`/reading/passages/${articleId}/notes`, payload)).data,
+    onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
+  });
+}
+
+export function useDeleteNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, articleId }: { id: string; articleId: string }) => {
+      await api.delete(`/reading/notes/${id}`);
+      return { articleId };
+    },
+    onSuccess: (data) => qc.invalidateQueries({ queryKey: ["passage", data.articleId] }),
+  });
+}
+
+export function useToggleBookmark() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ articleId, anchorOffset, anchorText }: { articleId: string; anchorOffset: number; anchorText?: string }) =>
+      (await api.post<{ bookmarked: boolean }>(`/reading/passages/${articleId}/bookmarks`, { anchorOffset, anchorText })).data,
+    onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
+  });
+}
+
+export function useToggleLike() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (articleId: string) =>
+      (await api.post<{ liked: boolean; likesCount: number }>(`/reading/passages/${articleId}/like`)).data,
+    onSuccess: (_d, articleId) => {
+      qc.invalidateQueries({ queryKey: ["passage", articleId] });
+      qc.invalidateQueries({ queryKey: ["community"] });
+    },
+  });
+}
+
+export function useSubmitRating() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ articleId, rating }: { articleId: string; rating: number }) =>
+      (await api.post<{ myRating: number; avgRating: number; ratingCount: number }>(`/reading/passages/${articleId}/rating`, { rating })).data,
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["passage", vars.articleId] });
+      qc.invalidateQueries({ queryKey: ["community"] });
+    },
+  });
+}
+
+export interface ExplainSentenceResult {
+  grammar: string;
+  vocabulary: string;
+  naturalTranslation: string;
+  literalTranslation: string;
+}
+
+export function useExplainSentence() {
+  return useMutation({
+    mutationFn: async (payload: { sentence: string; passageContext?: string; targetLang?: string }) =>
+      (await api.post<{ source: string; result: ExplainSentenceResult | null; note?: string }>("/ai/explain-sentence", payload)).data,
+  });
+}
+
+export function useWritingAssist() {
+  return useMutation({
+    mutationFn: async (payload: { paragraph: string; instruction: "CONTINUE" | "IMPROVE" | "FIX_GRAMMAR" | "SHORTEN" | "EXPAND" }) =>
+      (await api.post<{ source: string; text: string | null; note?: string }>("/ai/writing-assist", payload)).data,
+  });
+}
+
 // ---------- Quiz ----------
 export function useQuizQuestions(type: string, limit = 10, collectionId?: string, wordIds?: string) {
   return useQuery({
