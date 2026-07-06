@@ -296,3 +296,176 @@ model Note {
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([articleId, userId])
+}
+
+// Named ReadingBookmark (not just "Bookmark") to avoid clashing with any
+// future generic bookmark concept - this one is specifically a saved spot
+// within a Reading passage.
+model ReadingBookmark {
+  id           String   @id @default(cuid())
+  anchorText   String?
+  anchorOffset Int?
+  createdAt    DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, userId, anchorOffset])
+}
+
+model ArticleLike {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, userId])
+}
+
+model ArticleAttempt {
+  id        String   @id @default(cuid())
+  score     Int
+  total     Int
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([articleId])
+}
+
+model ArticleRating {
+  id        String   @id @default(cuid())
+  rating    Int
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, userId])
+}
+
+model SentenceBookmark {
+  id         String   @id @default(cuid())
+  text       String
+  translation String?
+  createdAt  DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  wordId String?
+  word   Word?  @relation(fields: [wordId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+}
+
+model QuizAttempt {
+  id        String   @id @default(cuid())
+  type      QuizType
+  score     Int
+  total     Int
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model DailyProgress {
+  id     String   @id @default(cuid())
+  date   DateTime @db.Date
+
+  reviewCount   Int @default(0)
+  listeningCount Int @default(0)
+  meaningCount   Int @default(0)
+  sentenceCount Int @default(0)
+  newWordsCount Int @default(0)
+  articlesRead  Int @default(0)
+
+  reviewTarget   Int @default(20)
+  listeningTarget Int @default(10)
+  meaningTarget   Int @default(10)
+  sentenceTarget Int @default(5)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+model StreakLog {
+  id   String   @id @default(cuid())
+  date DateTime @db.Date
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+// Reference dictionary data imported offline from Kaikki.org's Wiktionary
+// extract (see scripts/import-kaikki.ts). Powers the Reading Workspace's
+// double-click dictionary popup with real IPA/audio/synonyms/antonyms and,
+// crucially, genuine Thai translations straight from Wiktionary - so the
+// popup no longer depends entirely on Gemini for every field. Global
+// reference data shared by all users, not owned by any one User.
+model DictionaryEntry {
+  id           String   @id @default(cuid())
+  word         String   // lowercase headword, e.g. "overwhelming"
+  pos          String   // part of speech as given by Wiktionary, e.g. "adj", "noun", "verb"
+  ipa          String?
+  audioUrl     String?
+  senses       Json     // [{ gloss: string, examples: string[], tags: string[] }]
+  synonyms     String[]
+  antonyms     String[]
+  translations Json     // [{ lang: string, word: string }] - filtered to languages GlightDeck supports
+  sourceRev    String?  // Kaikki dump date (e.g. "2026-06-28"), for tracking re-imports
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([word, pos])
+  @@index([word])
+}
+
+model Achievement {
+  id          String @id @default(cuid())
+  key         String @unique // e.g. STREAK_7, STREAK_30, WORDS_100, WORDS_500
+  title       String
+  description String
+  icon        String @default("🔥")
+
+  users UserAchievement[]
+}
+
+model UserAchievement {
+  id            String   @id @default(cuid())
+  unlockedAt    DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+}

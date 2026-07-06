@@ -343,4 +343,499 @@ router.post("/generate-set", async (req, res) => {
       note: `สร้างด้วย Gemini 2.5 Flash · ระดับ ${cefrLevel} · รูปแบบ ${style} · ขอบเขต ${scope}`,
     });
   } catch (err: any) {
-    // Log the REAL cause to the server terminal - the message 
+    // Log the REAL cause to the server terminal - the message sent to the client stays
+    // generic/Thai, but whoever is running the server can see exactly what broke.
+    console.error("Gemini generate-set failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+
+    if (err?.name === "ZodError") {
+      return res.status(400).json({
+        source: "offline",
+        words: [],
+        note: "ข้อมูลที่ส่งมาไม่ถูกต้อง (validation error) - ดู log ฝั่งเซิร์ฟเวอร์สำหรับรายละเอียด",
+      });
+    }
+
+    return res.json({
+      source: "offline",
+      words: [],
+      note: friendlyGeminiError(err, "สร้างชุดคำศัพท์ด้วย Gemini"),
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reading Workspace: full dictionary lookup for the double-click popup -
+// POST /api/ai/word-detail
+//
+// Unlike /words/lookup (which only returns enough to prefill the Add Word
+// form), this returns the richer, read-only dictionary content the Reading
+// Workspace's popup displays: multiple meanings, an example with translation,
+// synonyms/antonyms, word family, CEFR level, audio pronunciation, and a 1-5
+// frequency rating.
+//
+// Three sources, layered so real dictionary data always wins over AI:
+//   1. DictionaryEntry (Kaikki.org's Wiktionary extract, imported offline via
+//      scripts/import-kaikki.ts) - real IPA, real audio, real synonyms/
+//      antonyms, and genuine Thai translations straight from Wiktionary.
+//   2. Free Dictionary API (api.dictionaryapi.dev, live, no key) - fills in
+//      ipa/audio/definitions/synonyms/antonyms/example when a word isn't in
+//      the (optional, self-hosted) Kaikki table.
+//   3. Gemini - fills in what neither free source has: CEFR level, frequency
+//      rating, word family, an example translation, and (only if neither
+//      source above had any) the Thai meaning itself. If GEMINI_API_KEY isn't
+//      set, whatever Kaikki/Free Dictionary already found is still returned,
+//      just without those AI-only fields.
+// ---------------------------------------------------------------------------
+
+const wordDetailInput = z.object({
+  word: z.string().min(1),
+  sourceLang: z.string().default("en"),
+  targetLang: z.string().default("th"),
+});
+
+interface KaikkiSenseRow {
+  gloss: string;
+  examples: string[];
+  tags: string[];
+}
+
+async function lookupKaikki(word: string) {
+  const rows = await prisma.dictionaryEntry.findMany({ where: { word: word.toLowerCase() } });
+  if (!rows.length) return null;
+
+  const sorted = [...rows].sort((a, b) => (b.senses as unknown as KaikkiSenseRow[]).length - (a.senses as unknown as KaikkiSenseRow[]).length);
+  const primary = sorted[0];
+  const primarySenses = primary.senses as unknown as KaikkiSenseRow[];
+
+  const thaiMeanings = new Set<string>();
+  for (const r of rows) {
+    for (const t of r.translations as unknown as { lang: string; word: string }[]) {
+      if (t.lang === "th" && t.word) thaiMeanings.add(t.word);
+    }
+  }
+
+  let exampleText: string | null = null;
+  for (const s of primarySenses) {
+    if (s.examples.length) {
+      exampleText = s.examples[0];
+      break;
+    }
+  }
+
+  return {
+    ipa: primary.ipa,
+    audioUrl: primary.audioUrl,
+    partOfSpeech: KAIKKI_POS_MAP[primary.pos] ?? "OTHER",
+    glosses: primarySenses.map((s) => s.gloss).filter(Boolean).slice(0, 3),
+    example: exampleText,
+    synonyms: primary.synonyms.slice(0, 4),
+    antonyms: primary.antonyms.slice(0, 4),
+    thaiMeanings: Array.from(thaiMeanings).slice(0, 4),
+  };
+}
+
+router.post("/word-detail", async (req, res) => {
+  try {
+    const { word, sourceLang, targetLang } = wordDetailInput.parse(req.body);
+    const sourceLangName = LANG_NAMES[sourceLang] ?? sourceLang;
+    const targetLangName = LANG_NAMES[targetLang] ?? targetLang;
+
+    // Kaikki is an English-only (Wiktionary) dataset - only consult it for
+    // English lookups. Same story for the Free Dictionary API below.
+    const kaikki = sourceLang === "en" ? await lookupKaikki(word) : null;
+    const free = !kaikki && sourceLang === "en" ? await freeDictionaryFullLookup(word) : null;
+    const freeBestMeaning = free?.meanings?.[0];
+
+    const sources: string[] = [];
+    if (kaikki) sources.push("kaikki");
+    if (free) sources.push("free-dictionary");
+
+    let ipa: string | null = kaikki?.ipa ?? free?.ipa ?? null;
+    let audioUrl: string | null = kaikki?.audioUrl ?? free?.audioUrl ?? null;
+    let partOfSpeech: string | null = kaikki?.partOfSpeech ?? (freeBestMeaning ? mapFreePos(freeBestMeaning.partOfSpeech) : null);
+    let englishGlosses: string[] = kaikki?.glosses?.length ? kaikki.glosses : (freeBestMeaning?.definitions.slice(0, 3) ?? []);
+    let exampleText: string | null = kaikki?.example ?? freeBestMeaning?.example ?? null;
+    let synonyms: string[] = kaikki?.synonyms?.length ? kaikki.synonyms : (free?.meanings.flatMap((m) => m.synonyms).slice(0, 4) ?? []);
+    let antonyms: string[] = kaikki?.antonyms?.length ? kaikki.antonyms : (free?.meanings.flatMap((m) => m.antonyms).slice(0, 4) ?? []);
+    let thaiMeanings: string[] = kaikki?.thaiMeanings ?? [];
+
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+
+    // Nothing at all found anywhere, and no Gemini to fall back on - this is
+    // the only case where we tell the user the lookup failed outright.
+    if (!kaikki && !free && !geminiKey) {
+      return res.json({
+        source: "offline",
+        result: null,
+        note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)",
+      });
+    }
+
+    let level = "A1";
+    let frequency = 3;
+    let wordFamily: string[] = [];
+    let exampleTranslation = "";
+    let note: string | undefined;
+
+    if (geminiKey) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: geminiKey });
+        const known =
+          englishGlosses.length || exampleText
+            ? `A dictionary already gives this information, which you should stay consistent with rather than contradict:\n` +
+              (partOfSpeech ? `- part of speech: ${partOfSpeech}\n` : "") +
+              (englishGlosses.length ? `- senses: ${englishGlosses.join(" / ")}\n` : "") +
+              (exampleText ? `- example sentence: "${exampleText}"\n` : "")
+            : "";
+
+        const prompt = `Look up the ${sourceLangName} word or short phrase "${word}" for a ${targetLangName}-speaking English learner using a Reading Workspace's dictionary popup.
+${known}
+Reply with:
+- ipa: IPA pronunciation (or null if not applicable, e.g. for a phrase). ${ipa ? `(already known: ${ipa} - repeat it)` : ""}
+- partOfSpeech: one of ${WORD_TYPES.join(", ")}.
+- level: CEFR level (A1, A2, B1, B2, C1, or C2) for how advanced this word is.
+- frequency: how common this word is in everyday English, 1 (rare) to 5 (extremely common).
+- meanings: ${thaiMeanings.length ? `translate these exact senses into ${targetLangName}, same order: ${englishGlosses.join(" / ")}` : `1-3 short ${targetLangName} translations/senses of the word, most common first`}.
+- example: ${exampleText ? `translate this exact sentence into ${targetLangName}: "${exampleText}"` : `one natural example sentence in ${sourceLangName} using the word, plus its ${targetLangName} translation`}.
+- synonyms: up to 4 English synonyms (empty array if none fit naturally).
+- antonyms: up to 4 English antonyms (empty array if none fit naturally).
+- wordFamily: other related word forms in the same family (e.g. overwhelm, overwhelmed, overwhelmingly) - empty array if none.`;
+
+        const response = await withGeminiRetry(() =>
+          ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+              systemInstruction: "You are a precise bilingual dictionary for English learners.",
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  ipa: { type: Type.STRING, nullable: true },
+                  partOfSpeech: { type: Type.STRING, enum: WORD_TYPES },
+                  level: { type: Type.STRING, enum: ["A1", "A2", "B1", "B2", "C1", "C2"] },
+                  frequency: { type: Type.INTEGER },
+                  meanings: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  example: {
+                    type: Type.OBJECT,
+                    properties: { text: { type: Type.STRING }, translation: { type: Type.STRING } },
+                    required: ["text", "translation"],
+                  },
+                  synonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  antonyms: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  wordFamily: { type: Type.ARRAY, items: { type: Type.STRING } },
+                },
+                required: ["partOfSpeech", "level", "frequency", "meanings", "example", "synonyms", "antonyms", "wordFamily"],
+              },
+              temperature: 0.2,
+            },
+          })
+        );
+
+        const raw = response.text;
+        if (!raw) throw new Error("Gemini returned an empty response");
+        const parsed = JSON.parse(raw);
+        sources.push("ai");
+
+        ipa = ipa ?? parsed.ipa ?? null;
+        partOfSpeech = partOfSpeech ?? (WORD_TYPES.includes(parsed.partOfSpeech) ? parsed.partOfSpeech : "OTHER");
+        level = ["A1", "A2", "B1", "B2", "C1", "C2"].includes(parsed.level) ? parsed.level : "A1";
+        frequency = Math.min(5, Math.max(1, Number(parsed.frequency) || 3));
+        if (!thaiMeanings.length) thaiMeanings = Array.isArray(parsed.meanings) ? parsed.meanings.filter(Boolean) : [];
+        exampleTranslation = parsed.example?.translation ?? "";
+        if (!exampleText) exampleText = parsed.example?.text ?? null;
+        if (!synonyms.length) synonyms = Array.isArray(parsed.synonyms) ? parsed.synonyms.filter(Boolean) : [];
+        if (!antonyms.length) antonyms = Array.isArray(parsed.antonyms) ? parsed.antonyms.filter(Boolean) : [];
+        wordFamily = Array.isArray(parsed.wordFamily) ? parsed.wordFamily.filter(Boolean) : [];
+      } catch (geminiErr: any) {
+        console.error("Gemini word-detail gap-fill failed:", geminiErr?.message ?? geminiErr);
+        // Kaikki/Free Dictionary data (if any) is still useful on its own -
+        // degrade gracefully instead of failing the whole lookup.
+        note = friendlyGeminiError(geminiErr, "เติมข้อมูล CEFR/ความถี่/คำแปล");
+      }
+    } else if (kaikki || free) {
+      note = "ยังไม่ได้ตั้งค่า GEMINI_API_KEY - ระดับ CEFR และความถี่เป็นค่าประมาณ และคำแปลไทยอาจไม่ครบ";
+    }
+
+    if (!kaikki && !free && !thaiMeanings.length && !englishGlosses.length) {
+      // Gemini itself found nothing usable either.
+      return res.json({ source: "offline", result: null, note: note ?? "ค้นหาคำนี้ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" });
+    }
+
+    return res.json({
+      source: sources.join("+") || "offline",
+      result: {
+        word,
+        ipa,
+        audioUrl,
+        partOfSpeech: partOfSpeech ?? "OTHER",
+        level,
+        frequency,
+        meanings: thaiMeanings.length ? thaiMeanings : englishGlosses,
+        example: exampleText ? { text: exampleText, translation: exampleTranslation } : null,
+        synonyms,
+        antonyms,
+        wordFamily,
+      },
+      note,
+    });
+  } catch (err: any) {
+    console.error("word-detail failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", result: null, note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({
+      source: "offline",
+      result: null,
+      note: friendlyGeminiError(err, "ค้นหาคำศัพท์"),
+    });
+  }
+});
+
+function mapFreePos(pos: string): string {
+  const map: Record<string, string> = {
+    noun: "NOUN", verb: "VERB", adjective: "ADJECTIVE", adverb: "ADVERB",
+    preposition: "PREPOSITION", conjunction: "CONJUNCTION", pronoun: "PRONOUN",
+  };
+  return map[pos?.toLowerCase()] ?? "OTHER";
+}
+
+// ---------------------------------------------------------------------------
+// Reading Workspace: Grammar knowledge box - POST /api/ai/grammar-notes
+//
+// For the "Reading + Grammar" test mode: identifies notable grammar points
+// actually used in the passage and explains each one, quoting a real example
+// straight from the text. Stateless (derives points from the passage itself
+// rather than requiring the original grammarFocus selection to be persisted),
+// so it works for any passage regardless of how it was created.
+// ---------------------------------------------------------------------------
+
+const grammarNotesInput = z.object({
+  passage: z.string().min(1),
+  targetLang: z.string().default("th"),
+});
+
+router.post("/grammar-notes", async (req, res) => {
+  try {
+    const { passage, targetLang } = grammarNotesInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const targetLangName = LANG_NAMES[targetLang] ?? targetLang;
+
+    if (!geminiKey) {
+      return res.json({
+        source: "offline",
+        points: [],
+        note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)",
+      });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const prompt = `Reading passage:\n\n${passage}\n\nIdentify 3-6 notable English grammar points actually used in this passage (e.g. Past Perfect, Passive Voice, Relative Clauses, Conditionals, Phrasal Verbs). For each one:
+- title: the grammar point's name (in English, short).
+- explanation: explain what it is and how it's used here, in ${targetLangName}, in 1-3 sentences.
+- example: quote a short exact sentence or phrase from the passage above that illustrates it.
+Only include points that genuinely appear in the passage - do not invent grammar that isn't there.`;
+
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: "You are an experienced ESL teacher pointing out grammar in a text for a learner.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                explanation: { type: Type.STRING },
+                example: { type: Type.STRING },
+              },
+              required: ["title", "explanation", "example"],
+            },
+          },
+          temperature: 0.3,
+        },
+      })
+    );
+
+    const raw = response.text;
+    if (!raw) throw new Error("Gemini returned an empty response");
+    const parsed = JSON.parse(raw);
+
+    const points = (Array.isArray(parsed) ? parsed : [])
+      .filter((p: any) => p?.title?.trim() && p?.explanation?.trim())
+      .map((p: any) => ({
+        title: String(p.title).trim(),
+        explanation: String(p.explanation).trim(),
+        example: String(p.example ?? "").trim(),
+      }));
+
+    return res.json({ source: "ai", points });
+  } catch (err: any) {
+    console.error("Gemini grammar-notes failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", points: [], note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({
+      source: "offline",
+      points: [],
+      note: friendlyGeminiError(err, "วิเคราะห์ไวยากรณ์"),
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reading Workspace: AI-explain-a-sentence - POST /api/ai/explain-sentence
+// ---------------------------------------------------------------------------
+
+const explainSentenceInput = z.object({
+  sentence: z.string().min(1),
+  passageContext: z.string().optional().default(""),
+  targetLang: z.string().default("th"),
+});
+
+/**
+ * POST /api/ai/explain-sentence { sentence, passageContext, targetLang }
+ * Used by the Reading Workspace's "AI Explain" panel (click a sentence while reading).
+ * Returns a grammar breakdown, a vocabulary breakdown, a natural translation, and a
+ * literal/word-for-word translation - Gemini-only, matching the other AI-generation routes.
+ */
+router.post("/explain-sentence", async (req, res) => {
+  try {
+    const { sentence, passageContext, targetLang } = explainSentenceInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const targetLangName = LANG_NAMES[targetLang] ?? targetLang;
+
+    if (!geminiKey) {
+      return res.json({
+        source: "offline",
+        result: null,
+        note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)",
+      });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const prompt = `Sentence to explain: "${sentence}"
+${passageContext ? `\nContext (the surrounding passage, for disambiguation only - do not explain this, only the sentence above):\n${passageContext}` : ""}
+
+Explain this sentence for a ${targetLangName}-speaking English learner. Reply with:
+- grammar: explain the grammar/structure of the sentence, in ${targetLangName}.
+- vocabulary: explain any notable words/phrases in the sentence, in ${targetLangName}.
+- naturalTranslation: a natural, fluent translation into ${targetLangName}.
+- literalTranslation: a literal, word-for-word (or close to it) translation into ${targetLangName}, to help the learner see how the English maps across.`;
+
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: "You are an experienced ESL teacher explaining sentences to a learner.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              grammar: { type: Type.STRING },
+              vocabulary: { type: Type.STRING },
+              naturalTranslation: { type: Type.STRING },
+              literalTranslation: { type: Type.STRING },
+            },
+            required: ["grammar", "vocabulary", "naturalTranslation", "literalTranslation"],
+          },
+          temperature: 0.4,
+        },
+      })
+    );
+
+    const raw = response.text;
+    if (!raw) throw new Error("Gemini returned an empty response");
+    const parsed = JSON.parse(raw);
+
+    return res.json({ source: "ai", result: parsed });
+  } catch (err: any) {
+    console.error("Gemini explain-sentence failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", result: null, note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({
+      source: "offline",
+      result: null,
+      note: friendlyGeminiError(err, "อธิบายประโยค"),
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Create Mode: AI writing assist - POST /api/ai/writing-assist
+// ---------------------------------------------------------------------------
+
+const writingAssistInput = z.object({
+  paragraph: z.string().min(1),
+  instruction: z.enum(["CONTINUE", "IMPROVE", "FIX_GRAMMAR", "SHORTEN", "EXPAND"]).default("IMPROVE"),
+});
+
+const INSTRUCTION_PROMPTS: Record<string, string> = {
+  CONTINUE: "Continue writing naturally from where this paragraph leaves off. Return ONLY the new text to append (do not repeat the original paragraph).",
+  IMPROVE: "Rewrite this paragraph to be clearer and more natural, keeping the same meaning and roughly the same length. Return ONLY the rewritten paragraph.",
+  FIX_GRAMMAR: "Fix any grammar, spelling, or punctuation mistakes in this paragraph, changing wording as little as possible. Return ONLY the corrected paragraph.",
+  SHORTEN: "Make this paragraph more concise while keeping the key meaning. Return ONLY the shortened paragraph.",
+  EXPAND: "Expand this paragraph with more natural detail/description. Return ONLY the expanded paragraph.",
+};
+
+/**
+ * POST /api/ai/writing-assist { paragraph, instruction }
+ * Used by Create Mode's "AI Assist" button while authoring a reading passage.
+ */
+router.post("/writing-assist", async (req, res) => {
+  try {
+    const { paragraph, instruction } = writingAssistInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+
+    if (!geminiKey) {
+      return res.json({
+        source: "offline",
+        text: null,
+        note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)",
+      });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `${INSTRUCTION_PROMPTS[instruction]}\n\nParagraph:\n${paragraph}`,
+        config: {
+          systemInstruction: "You are a skilled writing assistant helping an author draft a reading-practice passage for English learners.",
+          temperature: 0.6,
+        },
+      })
+    );
+
+    const text = (response.text ?? "").trim();
+    if (!text) throw new Error("Gemini returned an empty response");
+
+    return res.json({ source: "ai", text });
+  } catch (err: any) {
+    console.error("Gemini writing-assist failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", text: null, note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({
+      source: "offline",
+      text: null,
+      note: friendlyGeminiError(err, "ช่วยเขียน"),
+    });
+  }
+});
+
+export default router;

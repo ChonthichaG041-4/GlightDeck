@@ -639,4 +639,593 @@ export default function ReadingWorkspace({
               {alreadySaved ? (
                 <div className="space-y-2 rounded-lg border bg-muted/40 p-3 text-sm">
                   <p className="flex items-center gap-1.5 font-medium text-emerald-600">
-                    <Check className="h-4 
+                    <Check className="h-4 w-4" /> Already in Collection
+                  </p>
+                  <div className="flex gap-2">
+                    <Button asChild variant="outline" size="sm" className="flex-1 gap-1.5">
+                      <Link to={`/vocabulary?collectionId=ALL_WORDS&search=${encodeURIComponent(activeWord)}`}>
+                        <Book className="h-3.5 w-3.5" /> View Vocabulary
+                      </Link>
+                    </Button>
+                    <Button
+                      variant="outline" size="sm" className="flex-1 text-destructive hover:text-destructive"
+                      onClick={() => {
+                        deleteWord.mutate(alreadySaved.id);
+                        setSessionWords((prev) => prev.filter((w) => w.id !== alreadySaved.id));
+                      }}
+                      disabled={deleteWord.isPending}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  {justSaved ? (
+                    <Button asChild variant="outline" className="flex-1 gap-1.5">
+                      <Link to={`/vocabulary?collectionId=ALL_WORDS&search=${encodeURIComponent(activeWord)}`}>
+                        <Book className="h-4 w-4" /> View Details
+                      </Link>
+                    </Button>
+                  ) : (
+                    <Button variant="outline" className="flex-1 gap-1.5" disabled>
+                      <Book className="h-4 w-4" /> View Details
+                    </Button>
+                  )}
+                  <Button
+                    className="flex-1 gap-1.5"
+                    onClick={() => setSaveDialogOpen(true)}
+                    disabled={justSaved || !wordDetailResult}
+                  >
+                    {justSaved ? <><Check className="h-4 w-4" /> Added</> : <><Plus className="h-4 w-4" /> Add to Vocabulary</>}
+                  </Button>
+                </div>
+              )}
+
+              {vocabToast && (
+                <p className="rounded-md bg-foreground px-3 py-1.5 text-center text-xs font-medium text-background">
+                  ✓ {vocabToast}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ---- Save Vocabulary dialog (triggered from the dictionary popup) ---- */}
+      <SaveVocabularyDialog
+        open={saveDialogOpen}
+        onOpenChange={setSaveDialogOpen}
+        word={activeWord ?? ""}
+        detail={wordDetailResult}
+        onSaved={(collectionName, savedWord) => {
+          setSessionWords((prev) => [...prev, savedWord]);
+          setJustSaved(true);
+          setVocabToast(collectionName ? `Saved to "${collectionName}"` : "Saved to Vocabulary");
+          setTimeout(() => setVocabToast(null), 3500);
+        }}
+      />
+
+      {/* ---- Persistent bottom toolbar ---- */}
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 backdrop-blur">
+        {bottomHint && (
+          <p className="border-b bg-muted/60 py-1 text-center text-xs text-muted-foreground">{bottomHint}</p>
+        )}
+        <div className="mx-auto flex max-w-xs items-center justify-around py-2">
+          <BottomToolButton
+            icon={<Highlighter className="h-5 w-5" />}
+            label="Highlight"
+            onClick={() => (selectionToolbar ? doHighlight() : setBottomHint("Select some text first to highlight it"))}
+          />
+          <BottomToolButton
+            icon={<StickyNote className="h-5 w-5" />}
+            label="Note"
+            onClick={() => (selectionToolbar ? doAddNotePrompt() : setBottomHint("Select some text first to add a note"))}
+          />
+          <BottomToolButton icon={<MoreHorizontal className="h-5 w-5" />} label="More" disabled badge="Coming soon" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WordChipRow({ label, items }: { label: string; items: string[] }) {
+  if (!items.length) return null;
+  return (
+    <div>
+      <p className="mb-1 text-xs font-medium text-muted-foreground">{label}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((item, i) => (
+          <Badge key={i} variant="secondary">{item}</Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SaveVocabularyDialog({
+  open, onOpenChange, word, detail, onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  word: string;
+  detail: WordDetailResult | null;
+  onSaved: (collectionName: string | null, savedWord: { id: string; headword: string }) => void;
+}) {
+  const { data: collections } = useCollections();
+  const { data: tags } = useTags();
+  const createWord = useCreateWord();
+  const createCollection = useCreateCollection();
+
+  const [collectionChoice, setCollectionChoice] = useState("NONE"); // "NONE" | "NEW" | <collection id>
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [tagIds, setTagIds] = useState<Set<string>>(new Set());
+  const [difficulty, setDifficulty] = useState(3);
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setCollectionChoice("NONE");
+    setNewCollectionName("");
+    setTagIds(new Set());
+    setDifficulty(detail?.frequency ?? 3);
+    setNote("");
+    setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  function toggleTag(id: string) {
+    setTagIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function save() {
+    setError(null);
+    if (collectionChoice === "NEW" && !newCollectionName.trim()) {
+      setError("Enter a name for the new collection.");
+      return;
+    }
+    try {
+      let collectionId: string | undefined;
+      let collectionLabel: string | null = null;
+
+      if (collectionChoice === "NEW") {
+        const created = await createCollection.mutateAsync({ name: newCollectionName.trim() });
+        collectionId = created.id;
+        collectionLabel = created.name;
+      } else if (collectionChoice !== "NONE") {
+        collectionId = collectionChoice;
+        collectionLabel = collections?.find((c) => c.id === collectionChoice)?.name ?? null;
+      }
+
+      const created: any = await createWord.mutateAsync({
+        headword: word,
+        sourceLang: "en",
+        meaning: detail?.meanings?.join("; ") || word,
+        ipa: detail?.ipa ?? undefined,
+        audioUrl: detail?.audioUrl ?? undefined,
+        type: (detail?.partOfSpeech ?? "OTHER") as any,
+        level: (detail?.level ?? "A1") as any,
+        example: detail?.example?.text ?? undefined,
+        exampleTranslate: detail?.example?.translation ?? undefined,
+        synonym: detail?.synonyms?.join(", ") || undefined,
+        opposite: detail?.antonyms?.join(", ") || undefined,
+        frequency: difficulty,
+        collectionId,
+        tagIds: Array.from(tagIds),
+        note: note.trim() || undefined,
+        translations: { th: detail?.meanings?.[0] ?? "" },
+      } as any);
+
+      onOpenChange(false);
+      onSaved(collectionLabel, { id: created.id, headword: created.headword });
+    } catch (err: any) {
+      setError(err?.response?.data?.error ?? "Could not save this word. Please try again.");
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Save Vocabulary</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label>Word</Label>
+            <Input value={word} disabled />
+          </div>
+
+          <div>
+            <Label className="mb-1.5 block">Collection</Label>
+            <Select value={collectionChoice} onValueChange={setCollectionChoice}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="NONE">No Collection</SelectItem>
+                {collections?.map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}
+                <SelectItem value="NEW">+ Create Collection</SelectItem>
+              </SelectContent>
+            </Select>
+            {collectionChoice === "NEW" && (
+              <Input
+                className="mt-2" value={newCollectionName} onChange={(e) => setNewCollectionName(e.target.value)}
+                placeholder='e.g. "TOEIC"' autoFocus
+              />
+            )}
+          </div>
+
+          <div>
+            <Label className="mb-1.5 block">Tag</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {tags?.map((t) => (
+                <button
+                  key={t.id} type="button" onClick={() => toggleTag(t.id)}
+                  className={cn(
+                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    tagIds.has(t.id) ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent"
+                  )}
+                >
+                  {t.name}
+                </button>
+              ))}
+              {!tags?.length && <p className="text-xs text-muted-foreground">No tags yet - add some from the Vocabulary page.</p>}
+            </div>
+          </div>
+
+          <div>
+            <Label className="mb-1.5 block">Difficulty</Label>
+            <div className="flex gap-1">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button key={n} type="button" onClick={() => setDifficulty(n)}>
+                  <Star className={cn("h-5 w-5", n <= difficulty ? "fill-amber-400 text-amber-400" : "text-muted-foreground")} />
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <Label>Personal Note</Label>
+            <textarea
+              className="h-20 w-full rounded-md border p-2 text-sm"
+              placeholder="e.g. this comes up a lot in TOEIC"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+
+          {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button className="flex-1" onClick={save} disabled={createWord.isPending || createCollection.isPending}>
+              {createWord.isPending || createCollection.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ScrollTracker({ onScroll, scrollRef }: { onScroll: () => void; scrollRef: React.RefObject<HTMLDivElement | null> }) {
+  useEffect(() => {
+    function handler() {
+      // Track scroll progress against the whole document, since the passage
+      // flows within the normal page scroll rather than its own inner scrollbox.
+      const doc = document.documentElement;
+      const max = doc.scrollHeight - doc.clientHeight;
+      const el = scrollRef.current;
+      if (el) el.scrollTop = max > 0 ? window.scrollY : 0;
+      onScroll();
+    }
+    const fakeEl = { scrollTop: window.scrollY, scrollHeight: document.documentElement.scrollHeight, clientHeight: document.documentElement.clientHeight };
+    (scrollRef as any).current = fakeEl;
+    window.addEventListener("scroll", handler, { passive: true });
+    handler();
+    return () => window.removeEventListener("scroll", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+}
+
+// Compact Visibility control - lives on the right of the passage title row now
+// (instead of its own standalone Card below the passage).
+function VisibilityPills({ visibility, onUpdate }: { visibility?: string; onUpdate: (visibility: string) => void }) {
+  const options = [
+    { value: "PRIVATE", label: "Private" },
+    { value: "UNLISTED", label: "Unlisted" },
+    { value: "PUBLIC", label: "Public" },
+  ];
+  return (
+    <div className="flex shrink-0 items-center gap-1.5">
+      <Share2 className="h-3.5 w-3.5 text-muted-foreground" />
+      {options.map((o) => (
+        <button
+          key={o.value}
+          onClick={() => onUpdate(o.value)}
+          className={cn(
+            "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+            visibility === o.value ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent"
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// A sidebar Card whose contents can also be popped into a fullscreen overlay -
+// used by the Translation and Questions boxes so they're easier to focus on.
+function ExpandableSidebarCard({
+  title, icon, expandable = true, headerExtra, children,
+}: { title: string; icon: React.ReactNode; expandable?: boolean; headerExtra?: React.ReactNode; children: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <>
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="flex items-center gap-1.5 font-semibold">{icon}{title}</h2>
+            <div className="flex items-center gap-2">
+              {headerExtra}
+              {expandable && (
+                <button onClick={() => setExpanded(true)} className="text-muted-foreground hover:text-foreground" title="Expand">
+                  <Maximize2 className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          </div>
+          {children}
+        </CardContent>
+      </Card>
+
+      {expanded && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-background p-4 sm:p-8">
+          <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col overflow-hidden">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="flex items-center gap-1.5 text-lg font-semibold">{icon}{title}</h2>
+              <div className="flex items-center gap-3">
+                {headerExtra}
+                <button onClick={() => setExpanded(false)} className="text-muted-foreground hover:text-foreground" title="Collapse">
+                  <Minimize2 className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 space-y-3 overflow-y-auto">{children}</div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function TranslationBox({
+  value, onChange, checked, onCheck, reference,
+}: { value: string; onChange: (v: string) => void; checked: boolean; onCheck: () => void; reference?: string }) {
+  return (
+    <>
+      <textarea
+        className="h-32 w-full rounded-md border p-3 text-sm"
+        placeholder="Read, then write your translation here..."
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={checked}
+      />
+      {!checked ? (
+        <Button className="w-full" onClick={onCheck} disabled={!value.trim()}>Check</Button>
+      ) : (
+        <div className="space-y-1 rounded-lg border bg-muted/40 p-3 text-sm">
+          <p className="text-xs font-medium text-muted-foreground">Reference Translation</p>
+          <p className="whitespace-pre-line">{reference}</p>
+        </div>
+      )}
+    </>
+  );
+}
+
+function QuestionsBox({
+  questions, currentIndex, onNavigate, answers, onAnswer,
+}: {
+  questions: ReadingQuestion[];
+  currentIndex: number;
+  onNavigate: (i: number) => void;
+  answers: Record<number, string>;
+  onAnswer: (i: number, value: string) => void;
+}) {
+  const total = questions.length;
+  const current = questions[currentIndex];
+  const isAnswered = (i: number) => !!answers[i]?.trim();
+
+  return (
+    <>
+      <div className="grid grid-cols-5 gap-2">
+        {questions.map((_, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onNavigate(i)}
+            className={cn(
+              "flex h-9 w-9 items-center justify-center rounded-full border text-sm font-medium transition-colors",
+              i === currentIndex
+                ? "border-primary bg-primary text-primary-foreground"
+                : isAnswered(i)
+                  ? "border-emerald-500 bg-emerald-500 text-white"
+                  : "border-muted-foreground/30 text-muted-foreground hover:bg-accent"
+            )}
+          >
+            {isAnswered(i) && i !== currentIndex ? <Check className="h-4 w-4" /> : i + 1}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Answered</span>
+        <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-primary" /> Current</span>
+        <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full border border-muted-foreground/40" /> Unanswered</span>
+      </div>
+
+      {current && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Question {currentIndex + 1}</p>
+          <p className="text-sm font-medium">{current.prompt}</p>
+          <div className="space-y-1.5">
+            {current.options.length > 0 ? (
+              current.options.map((opt) => {
+                const selected = answers[currentIndex] === opt;
+                const isCorrectOpt = opt === current.answer;
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => onAnswer(currentIndex, opt)}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                      selected && isCorrectOpt
+                        ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                        : selected
+                          ? "border-destructive bg-destructive/5"
+                          : "hover:bg-accent"
+                    )}
+                  >
+                    {opt}
+                    {selected && isCorrectOpt && <Check className="h-4 w-4 text-emerald-600" />}
+                    {selected && !isCorrectOpt && <X className="h-4 w-4 text-destructive" />}
+                  </button>
+                );
+              })
+            ) : (
+              <Input
+                value={answers[currentIndex] ?? ""}
+                onChange={(e) => onAnswer(currentIndex, e.target.value)}
+                placeholder="Your answer..."
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      <Button
+        className="w-full"
+        variant="outline"
+        onClick={() => onNavigate(Math.min(currentIndex + 1, total - 1))}
+        disabled={currentIndex >= total - 1}
+      >
+        {currentIndex >= total - 1 ? "Last Question" : "Next Question"}
+      </Button>
+    </>
+  );
+}
+
+function VocabularyBox({
+  words, onRemove,
+}: { words: { id: string; headword: string }[]; onRemove: (id: string) => void }) {
+  return (
+    <>
+      {words.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Double-click a word while reading to add it here.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {words.map((w) => (
+            <div key={w.id} className="flex items-center justify-between rounded-md border px-2.5 py-1.5 text-sm">
+              <span className="capitalize">{w.headword}</span>
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <button onClick={() => speak(w.headword)} className="hover:text-foreground" title="Pronounce">
+                  <Volume2 className="h-3.5 w-3.5" />
+                </button>
+                <button onClick={() => onRemove(w.id)} className="hover:text-destructive" title="Remove">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <Button asChild variant="outline" size="sm" className="w-full">
+        <Link to="/vocabulary?collectionId=ALL_WORDS">View All</Link>
+      </Button>
+    </>
+  );
+}
+
+function GrammarBox({ query }: { query: { isLoading: boolean; data?: { points: GrammarPoint[]; note?: string } } }) {
+  if (query.isLoading) return <p className="text-sm text-muted-foreground">กำลังวิเคราะห์...</p>;
+  const points = query.data?.points ?? [];
+  if (!points.length) {
+    return <p className="text-sm text-muted-foreground">{query.data?.note ?? "ไม่พบจุดไวยากรณ์ที่เด่นชัดในบทความนี้"}</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {points.map((p, i) => (
+        <div key={i} className="space-y-1 rounded-md border p-2.5 text-sm">
+          <p className="font-semibold text-primary">{p.title}</p>
+          <p className="text-muted-foreground">{p.explanation}</p>
+          {p.example && <p className="italic">"{p.example}"</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BottomToolButton({
+  icon, label, onClick, disabled, badge,
+}: { icon: React.ReactNode; label: string; onClick?: () => void; disabled?: boolean; badge?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex flex-col items-center gap-1 text-xs font-medium",
+        disabled ? "cursor-not-allowed text-muted-foreground/40" : "text-muted-foreground hover:text-primary"
+      )}
+    >
+      {icon}
+      <span>{label}</span>
+      {badge && <span className="text-[10px] font-normal text-muted-foreground/70">{badge}</span>}
+    </button>
+  );
+}
+
+function StatRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="flex items-center gap-1.5 text-muted-foreground">{icon}{label}</span>
+      <span className="font-medium">{value}</span>
+    </div>
+  );
+}
+
+function ToolbarBtn({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+    >
+      {icon}
+    </button>
+  );
+}
+
+function ExplainField({ label, text }: { label: string; text?: string }) {
+  if (!text) return null;
+  return (
+    <div>
+      <p className="mb-0.5 text-xs font-semibold text-muted-foreground">{label}</p>
+      <p className="whitespace-pre-line">{text}</p>
+    </div>
+  );
+}
+
+function formatTime(totalSec: number) {
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}

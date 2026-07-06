@@ -111,4 +111,5 @@ export interface StatsSummary {
   currentStreak: number;
   longestStreak: number;
   reviewActivity: { date: string; count: number }[];
-  breakdown: { name: stri
+  breakdown: { name: string; value: number }[];
+}

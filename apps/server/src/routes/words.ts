@@ -223,4 +223,8 @@ export function serializeWord(word: any) {
   return {
     ...word,
     tags: word.tags?.map((wt: any) => wt.tag) ?? [],
-    isLeech: isLeech(word.lap
+    isLeech: isLeech(word.lapses ?? 0),
+  };
+}
+
+export default router;

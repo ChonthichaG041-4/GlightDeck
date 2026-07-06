@@ -114,8 +114,8 @@ function SequentialQuiz({ type, collectionId, wordIds }: { type: string; collect
           <>
             <h2 className="text-2xl font-bold">{q.prompt}</h2>
             <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
-              {q.options.map((opt: string) => (
-                <Button key={opt} variant="outline" className="h-11" onClick={() => answer(opt === q.answer, q.wordId)}>{opt}</Button>
+              {q.options.map((opt: string, i: number) => (
+                <Button key={`${opt}-${i}`} variant="outline" className="h-11" onClick={() => answer(opt === q.answer, q.wordId)}>{opt}</Button>
               ))}
             </div>
           </>
@@ -227,4 +227,18 @@ function MatchingQuiz({ collectionId, wordIds }: { collectionId: string; wordIds
                   key={r.id}
                   disabled={matched.includes(r.id)}
                   className={cn(
- 
+                    "w-full rounded-lg border p-3 text-left text-sm transition-colors",
+                    matched.includes(r.id) ? "opacity-30" : wrongFlash === r.id ? "border-destructive bg-destructive/10" : "hover:bg-accent"
+                  )}
+                  onClick={() => pickRight(r.id)}
+                >
+                  {r.text}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

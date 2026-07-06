@@ -23,4 +23,11 @@ export function CollectionPicker({
         <SelectItem value="ALL">All collections</SelectItem>
         {includeAllWords && <SelectItem value="ALL_WORDS">All words</SelectItem>}
         {collections?.map((c) => (
-        
+          <SelectItem key={c.id} value={c.id}>
+            {c.icon} {c.name} ({c.wordCount})
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}

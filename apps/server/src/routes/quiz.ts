@@ -34,7 +34,13 @@ router.get("/generate", async (req, res) => {
   switch (type) {
     case "MULTIPLE_CHOICE": {
       questions = chosen.map((word) => {
-        const distractors = shuffle(pool.filter((w) => w.id !== word.id)).slice(0, 3).map((w) => w.meaning);
+        // Dedupe by meaning text (not just word id) - two different words can share
+        // the same translation, which previously could produce duplicate options
+        // (e.g. two "อบอุ่น" choices) and broke React's key uniqueness on the client.
+        const uniqueMeanings = Array.from(
+          new Set(pool.filter((w) => w.id !== word.id && w.meaning !== word.meaning).map((w) => w.meaning))
+        );
+        const distractors = shuffle(uniqueMeanings).slice(0, 3);
         return {
           wordId: word.id,
           prompt: word.headword,
@@ -110,4 +116,14 @@ router.post("/submit", async (req, res) => {
       create: { userId: user.id, date: today, meaningCount: total },
     });
   } else if (type === "SENTENCE") {
-    await prisma.dail
+    await prisma.dailyProgress.upsert({
+      where: { userId_date: { userId: user.id, date: today } },
+      update: { sentenceCount: { increment: total } },
+      create: { userId: user.id, date: today, sentenceCount: total },
+    });
+  }
+
+  res.status(201).json(attempt);
+});
+
+export default router;

@@ -141,4 +141,29 @@ Things to know before running the full import:
 - **Flashcards**: Anki-style spaced repetition (SM-2) with Again/Hard/Good/Easy grading; a "Smart Review" panel resurfaces words you keep getting wrong (4+ lapses)
 - **Listening**: multiple-choice and dictation modes using the browser's built-in text-to-speech
 - **Reading**: save articles by category (novels, game articles, news...) and tap any word while reading to see its meaning (via the AI assistant) and add it straight to your vocabulary
-- **Quiz**: multiple choice, matching, typing, sentence fill-in-the-blank, and listening quiz formats, all generated from your own word b
+- **Quiz**: multiple choice, matching, typing, sentence fill-in-the-blank, and listening quiz formats, all generated from your own word bank
+- **Statistics**: words learned/mastered/learning/forgotten, accuracy, streaks, and charts (Recharts)
+- **Collections & Tags**: organize words into custom decks (e.g. Fantasy, Business, Travel) and custom tags (e.g. IELTS, TOEIC, Anime)
+- **Word relationships**: mindmap-style synonym chains (e.g. happy → joy → cheerful → delighted → ecstatic)
+- **Bookmarked sentences**, **Daily Challenge** progress, and **Achievements** (streak/word-count badges)
+- **Import**: paste a word list or upload a CSV/TXT file to bulk-create flashcards
+- **AI Assistant**: ask "Explain 'Take off'" and get meaning / example / usage / contrast
+- **Multi-language auto-suggest**: when adding a word, pick a source language and one or more target languages - typing the word and hitting "Auto-suggest" fills in IPA, part of speech, CEFR level, and a translation per target language (via the same `ANTHROPIC_API_KEY`); every suggested field stays editable before saving
+- **Collections as study groups**: filter Vocabulary by collection, or jump straight into Flashcards / Listening / Quiz scoped to just that one group instead of your whole deck
+
+## Deployment
+
+- **Frontend** → [Vercel](https://vercel.com): set the root directory to `apps/web`, add the `VITE_*` env vars, build command `npm run build`, output directory `dist`.
+- **Backend + database** → [Railway](https://railway.app) or [Render](https://render.com): deploy `apps/server` as a Node service (`npm run build` then `npm start`), add a managed PostgreSQL instance, set the server env vars, and run `npx prisma migrate deploy` once against the production database.
+- Set `CLIENT_ORIGIN` on the server to your deployed frontend URL, and `VITE_API_URL` on the frontend to your deployed API URL.
+
+## Scripts (root)
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Run frontend + backend together |
+| `npm run build` | Build both apps for production |
+| `npm run db:migrate` | Run Prisma migrations (dev) |
+| `npm run db:seed` | Seed demo data |
+| `npm run db:studio` | Open Prisma Studio |
+| `npm --workspace apps/server run db:import-kaikki` | Import Kaikki.org dictionary data (see "Dictionary data" above) |

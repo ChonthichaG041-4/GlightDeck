@@ -35,4 +35,21 @@ export async function touchStreak(userId: string): Promise<{ current: number; lo
   let cursor = today;
   for (const log of logs) {
     const logDate = startOfDay(new Date(log.date));
-    if (logDate.getTime() === cursor.getTime(
+    if (logDate.getTime() === cursor.getTime()) {
+      current += 1;
+      cursor = new Date(cursor.getTime() - 86400000);
+    } else if (logDate.getTime() < cursor.getTime()) {
+      break;
+    }
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const longest = Math.max(current, user?.longestStreak ?? 0);
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { currentStreak: current, longestStreak: longest, lastActiveAt: new Date() },
+  });
+
+  return { current, longest };
+}
