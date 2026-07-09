@@ -233,6 +233,7 @@ export default function ImportBookWizard({
     try {
       const created = await createPassage.mutateAsync({
         title: title.trim(),
+        content: cleanParagraphs.join("\n\n"),
         description: instruction.trim() || undefined,
         category: collection.trim() || "Reading Practice",
         tags,
@@ -356,7 +357,7 @@ function UploadStep({
   dragOver: boolean;
   setDragOver: (v: boolean) => void;
   addFiles: (files: FileList | File[] | null) => void;
-  browseInputRef: React.RefObject<HTMLInputElement>;
+  browseInputRef: React.RefObject<HTMLInputElement | null>;
   onContinue: () => void;
 }) {
   return (
@@ -439,7 +440,7 @@ function ReviewPagesStep({
   onMove: (index: number, dir: -1 | 1) => void;
   onRotate: (id: string) => void;
   onAddMore: () => void;
-  addMoreInputRef: React.RefObject<HTMLInputElement>;
+  addMoreInputRef: React.RefObject<HTMLInputElement | null>;
   addFiles: (files: FileList | File[] | null) => void;
   onBack: () => void;
   onProcess: () => void;
