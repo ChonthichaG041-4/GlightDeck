@@ -48,9 +48,9 @@ export const QUESTION_COUNTS = [5, 10, 15, 20];
 // only used on the "Generate with AI" tab; the rest are Create tab options.
 export const CONTENT_SOURCES: { value: string; icon: ComponentType<{ className?: string }>; title: string; description: string; enabled: boolean }[] = [
   { value: "WRITE_MANUALLY", icon: PenLine, title: "Write Manually", description: "Compose your own text in the editor", enabled: true },
-  { value: "PASTE_TEXT", icon: ClipboardPaste, title: "Paste Text", description: "Paste text you already have", enabled: true },
-  { value: "IMPORT_DOCX", icon: FileType, title: "Import DOCX", description: "Extract text from a Word document", enabled: true },
-  { value: "IMPORT_PDF", icon: FileUp, title: "Import PDF", description: "Extract text from a PDF", enabled: true },
-  { value: "IMPORT_MARKDOWN", icon: FileCode2, title: "Import Markdown", description: "Paste Markdown - headings/quotes/code convert automatically", enabled: true },
+  { value: "PASTE_TEXT", icon: ClipboardPaste, title: "Paste Text", description: "Coming soon", enabled: false },
+  { value: "IMPORT_DOCX", icon: FileType, title: "Import DOCX", description: "Coming soon", enabled: false },
+  { value: "IMPORT_PDF", icon: FileUp, title: "Import PDF", description: "Coming soon", enabled: false },
+  { value: "IMPORT_MARKDOWN", icon: FileCode2, title: "Import Markdown", description: "Coming soon", enabled: false },
   { value: "IMPORT_BOOK", icon: ImageIcon, title: "Import Book/Reading", description: "Photo/scan OCR - opens a guided import wizard", enabled: true },
 ];

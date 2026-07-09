@@ -890,7 +890,7 @@ function WordDetailDialog({
                 onChange={(e) => setForm({ ...form, meaning: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div>
                 <Label>IPA</Label>
                 <Input
@@ -951,7 +951,7 @@ function WordDetailDialog({
                 }
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label>Synonym</Label>
                 <Input
@@ -971,7 +971,7 @@ function WordDetailDialog({
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label>Collection</Label>
                 <Select
@@ -1030,14 +1030,14 @@ function WordDetailDialog({
         ) : (
           <div className="space-y-3 text-sm">
             <Field label="Meaning" value={word.meaning} />
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <Field label="IPA" value={word.ipa || "-"} />
               <Field label="Type" value={word.type} />
               <Field label="Level" value={word.level} />
             </div>
             <Field label="Example" value={word.example || "-"} />
             <Field label="Translate" value={word.exampleTranslate || "-"} />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="Synonym" value={word.synonym || "-"} />
               <Field label="Opposite" value={word.opposite || "-"} />
             </div>
@@ -1256,7 +1256,7 @@ function AddWordDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <Label>Source language</Label>
               <Select value={sourceLang} onValueChange={setSourceLang}>
@@ -1355,7 +1355,7 @@ function AddWordDialog({
             </p>
           )}
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div>
               <Label>IPA</Label>
               <Input
@@ -1906,7 +1906,7 @@ function GenerateSetDialog({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label>ระดับ CEFR</Label>
                 <Select value={cefrLevel} onValueChange={setCefrLevel}>
@@ -1943,7 +1943,7 @@ function GenerateSetDialog({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label>รูปแบบคำศัพท์</Label>
                 <Select value={style} onValueChange={setStyle}>

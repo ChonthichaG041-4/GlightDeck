@@ -197,7 +197,7 @@ function MatchingQuiz({ collectionId, wordIds }: { collectionId: string; wordIds
 
   return (
     <Card>
-      <CardContent className="p-8">
+      <CardContent className="p-4 sm:p-8">
         {done ? (
           <div className="flex flex-col items-center gap-3 py-6 text-center">
             <CheckCircle2 className="h-10 w-10 text-emerald-500" />
@@ -205,7 +205,7 @@ function MatchingQuiz({ collectionId, wordIds }: { collectionId: string; wordIds
             <Button className="gap-2" onClick={() => refetch()}><RefreshCcw className="h-4 w-4" /> New Set</Button>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6">
             <div className="space-y-2">
               {group.left.map((l: any) => (
                 <button

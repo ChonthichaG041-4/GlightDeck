@@ -1110,10 +1110,28 @@ const BOOK_IMPORT_USER_PROMPT = `Parse the attached page image(s) as a single re
 
 ${BOOK_IMPORT_JSON_SHAPE}`;
 
+// Combined cap across all pages in one request - the per-file 15MB limit
+// alone still lets a 12-page upload reach ~180MB of raw buffers, which then
+// gets base64-encoded (another ~33% larger) and held in memory again as part
+// of the outgoing JSON request body. That combination is enough to exhaust a
+// local dev process's heap and crash it outright (an OOM crash isn't a normal
+// thrown error - it can't be caught by try/catch, and it takes down every
+// other in-flight request too, not just this one). Rejecting oversized
+// combined uploads up front with a clean 400 is much better than risking that.
+const MAX_BOOK_IMPORT_TOTAL_BYTES = 40 * 1024 * 1024; // 40MB combined
+
 router.post("/import/book", uploadImages.array("images", 12), async (req, res) => {
   try {
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (!files.length) return res.status(400).json({ error: "กรุณาอัปโหลดภาพอย่างน้อย 1 หน้า" });
+
+    const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+    if (totalBytes > MAX_BOOK_IMPORT_TOTAL_BYTES) {
+      return res.status(400).json({
+        error: `ไฟล์รวมกันใหญ่เกินไป (${(totalBytes / (1024 * 1024)).toFixed(1)}MB) กรุณาอัปโหลดครั้งละไม่เกิน ${MAX_BOOK_IMPORT_TOTAL_BYTES / (1024 * 1024)}MB ` +
+          `ลองแบ่งอัปโหลดเป็นหลายครั้ง หรือบีบอัด/ลดความละเอียดภาพก่อน`,
+      });
+    }
 
     const openRouterKey = process.env.OPENROUTER_API_KEY;
     if (!openRouterKey) {

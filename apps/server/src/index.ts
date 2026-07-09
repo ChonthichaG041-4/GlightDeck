@@ -6,6 +6,23 @@ import { withClerk } from "./middleware/auth";
 import apiRouter from "./routes";
 import { errorHandler, notFound } from "./middleware/errorHandler";
 
+// Without these, a truly uncaught exception or unhandled promise rejection
+// anywhere (e.g. an OOM spike, or a raw stream 'error' event Node treats as
+// fatal if nothing is listening) silently kills the whole process - every
+// in-flight request gets dropped with a bare ERR_CONNECTION_RESET on the
+// client, including completely unrelated requests, and there's nothing in
+// the terminal explaining why. Logging first at least leaves a real stack
+// trace to diagnose from next time. Node still exits after an
+// uncaughtException (the process may be in a corrupted state - continuing
+// silently is worse), but now with a clear reason logged before it does.
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED PROMISE REJECTION:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION - process will exit:", err);
+  process.exit(1);
+});
+
 const app = express();
 const PORT = process.env.PORT ?? 4000;
 
