@@ -1,9 +1,9 @@
 import { useEffect, useState, type ComponentType } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import {
-  Plus, BookText, Wand2,
-  BookOpen, Gem, BarChart3, PenLine, ClipboardPaste, FileUp, FileType, Link2, Lock, Globe, Trash2, Pencil,
-  Ruler, Palette, GraduationCap, SpellCheck2, Target, ClipboardList, Headphones,
+  Wand2,
+  BookOpen, Gem, BarChart3, PenLine, ClipboardPaste, FileUp, FileType, Link2, Lock,
+  Ruler, Palette, GraduationCap, SpellCheck2, Target, ClipboardList,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,15 +11,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
-import { useArticles, useCreateArticle, useDeleteArticle, useGenerateReadingExercise, type ReadingExercise } from "@/api/hooks";
+import { useGenerateReadingExercise, type ReadingExercise } from "@/api/hooks";
 import ReadingWorkspace from "@/components/reading/ReadingWorkspace";
 import CreateModeTab from "@/components/reading/CreateModeTab";
-import CommunityTab from "@/components/reading/CommunityTab";
 import { FieldLabel, OptionCard, PillButton } from "@/components/reading/primitives";
 import { DIFFICULTY_CARDS, DIFFICULTY_LABELS, TEST_MODES, QUESTION_TYPES, QUESTION_COUNTS } from "@/components/reading/composerConstants";
-import { cn } from "@/lib/utils";
-import type { Article } from "@/types";
 
 const EXAM_MODES = [
   { value: "GENERAL_ENGLISH", label: "General English" },
@@ -97,10 +93,14 @@ const READING_SKILLS = [
   { value: "MIXED", label: "Mixed" },
 ];
 
-type ReadingTab = "generate" | "create" | "community" | "library";
+type ReadingTab = "generate" | "create";
 
-const VALID_TABS: ReadingTab[] = ["generate", "create", "community", "library"];
+const VALID_TABS: ReadingTab[] = ["generate", "create"];
 
+// My Articles and Community used to be tabs here too; they now live in the
+// Articles hub (/articles), so Reading is just Generate/Create. Saving from
+// either tab automatically shows up in Articles -> My Articles (unchanged -
+// both tabs already persist through the shared passages API).
 export default function ReadingPage() {
   const { id: editArticleId } = useParams<{ id?: string }>();
   const [searchParams] = useSearchParams();
@@ -116,9 +116,6 @@ export default function ReadingPage() {
     if (editArticleId) setTab("create");
   }, [editArticleId]);
 
-  // A save-and-return-to-My-Articles redirect (from editing an article) lands
-  // on /reading?tab=library - pick that up even if this page instance happens
-  // to stay mounted (e.g. future navigation changes) rather than only on init.
   useEffect(() => {
     if (!editArticleId && tabParam && VALID_TABS.includes(tabParam)) setTab(tabParam);
   }, [tabParam, editArticleId]);
@@ -127,185 +124,19 @@ export default function ReadingPage() {
     <div className="mx-auto max-w-5xl space-y-5">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">📖 Reading Practice</h1>
-        <p className="text-sm text-muted-foreground">Build a custom AI reading exercise, write your own, or explore the community.</p>
+        <p className="text-sm text-muted-foreground">Build a custom AI reading exercise, or write your own. Saved passages show up in Articles - My Articles.</p>
       </div>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as ReadingTab)}>
         <TabsList>
           <TabsTrigger value="generate">Generate with AI</TabsTrigger>
           <TabsTrigger value="create">Create</TabsTrigger>
-          <TabsTrigger value="community">Community</TabsTrigger>
-          <TabsTrigger value="library">My Articles</TabsTrigger>
         </TabsList>
       </Tabs>
 
       {tab === "generate" && <ReadingGenerator />}
       {tab === "create" && <CreateModeTab editArticleId={editArticleId} />}
-      {tab === "community" && <CommunityTab />}
-      {tab === "library" && <ArticleLibrary />}
     </div>
-  );
-}
-
-// ============================================================================
-// Tab 2: My Articles (existing paste-your-own-text gallery, unchanged)
-// ============================================================================
-
-function ArticleLibrary() {
-  const { data: articles, isLoading } = useArticles();
-  const categories = Array.from(new Set(articles?.map((a) => a.category) ?? []));
-
-  return (
-    <div className="space-y-6">
-      <div className="flex justify-end">
-        <AddArticleDialog />
-      </div>
-
-      {isLoading && <p className="text-sm text-muted-foreground">Loading...</p>}
-
-      {categories.map((category) => (
-        <div key={category}>
-          <h2 className="mb-2 text-sm font-semibold text-muted-foreground">{category}</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {articles?.filter((a) => a.category === category).map((a) => (
-              <ArticleCard key={a.id} article={a} />
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {!isLoading && articles?.length === 0 && (
-        <p className="py-10 text-center text-sm text-muted-foreground">No articles yet - add your first one.</p>
-      )}
-    </div>
-  );
-}
-
-const VISIBILITY_CONFIG: Record<string, { label: string; icon: ComponentType<{ className?: string }>; className: string }> = {
-  PRIVATE: { label: "Private", icon: Lock, className: "bg-muted text-muted-foreground" },
-  UNLISTED: { label: "Unlisted", icon: Link2, className: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300" },
-  PUBLIC: { label: "Public", icon: Globe, className: "bg-primary/10 text-primary" },
-};
-
-function ArticleCard({ article }: { article: Article }) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const deleteArticle = useDeleteArticle();
-
-  const vis = VISIBILITY_CONFIG[article.visibility ?? "PRIVATE"] ?? VISIBILITY_CONFIG.PRIVATE;
-  const VisIcon = vis.icon;
-
-  return (
-    <>
-      <Card className="group relative transition-shadow hover:shadow-md">
-        <Link to={`/reading/${article.id}`} className="block">
-          <CardContent className="flex items-center gap-3 p-4 pr-11">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-              <BookText className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-medium">{article.title}</p>
-              <div className="mt-1 flex items-center gap-2">
-                <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium", vis.className)}>
-                  <VisIcon className="h-3 w-3" /> {vis.label}
-                </span>
-                <span className="text-xs text-muted-foreground">{new Date(article.createdAt).toLocaleDateString()}</span>
-              </div>
-            </div>
-          </CardContent>
-        </Link>
-        <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          <Link
-            to={`/listening/${article.id}`}
-            aria-label="Test Listening"
-            title="Test Listening"
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Headphones className="h-4 w-4" />
-          </Link>
-          <Link
-            to={`/reading/${article.id}/edit`}
-            aria-label="Edit article"
-            title="Edit"
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Pencil className="h-4 w-4" />
-          </Link>
-          <button
-            type="button"
-            aria-label="Delete article"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setConfirmOpen(true);
-            }}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
-      </Card>
-
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete "{article.title}"?</DialogTitle>
-            <DialogDescription>
-              This permanently deletes the article along with its questions, highlights, notes, and stats. This can't be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
-            <Button
-              variant="destructive"
-              disabled={deleteArticle.isPending}
-              onClick={() => deleteArticle.mutate(article.id, { onSuccess: () => setConfirmOpen(false) })}
-            >
-              {deleteArticle.isPending ? "Deleting..." : "Delete"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-function AddArticleDialog() {
-  const [open, setOpen] = useState(false);
-  const createArticle = useCreateArticle();
-  const [form, setForm] = useState({ title: "", category: "News", content: "" });
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button className="gap-2"><Plus className="h-4 w-4" /> Add Article</Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Add an article</DialogTitle>
-          <DialogDescription>Paste any text - Harry Potter, game articles, news, novels...</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div><Label>Title</Label><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
-          <div><Label>Category</Label><Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Harry Potter, Game Articles, News, Novel" /></div>
-          <div>
-            <Label>Content</Label>
-            <textarea
-              className="h-40 w-full rounded-md border p-2 text-sm"
-              value={form.content}
-              onChange={(e) => setForm({ ...form, content: e.target.value })}
-            />
-          </div>
-          <Button
-            className="w-full"
-            onClick={() => createArticle.mutate(form, { onSuccess: () => { setOpen(false); setForm({ title: "", category: "News", content: "" }); } })}
-          >
-            Save article
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -685,5 +516,3 @@ function ReadingGenerator() {
     />
   );
 }
-
-

@@ -63,6 +63,15 @@ enum ArticleVisibility {
   UNLISTED
 }
 
+// Workflow state for an article, orthogonal to ArticleVisibility (who can see
+// it). Draft/Published/Archived per the Articles-hub "My Articles" spec -
+// Published is required before an article can be shown in Community browsing.
+enum ArticleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
 // ---------- Core models ----------
 
 model User {
@@ -94,6 +103,7 @@ model User {
   articleLikes      ArticleLike[]
   articleAttempts   ArticleAttempt[]
   articleRatings    ArticleRating[]
+  studyLists        StudyList[]
 }
 
 model Collection {
@@ -249,6 +259,7 @@ model Article {
   cefrLevel     String?           // also doubles as "Difficulty" in the unified Generate/Create layout
   testMode      String?
   visibility    ArticleVisibility @default(PRIVATE)
+  status        ArticleStatus     @default(DRAFT)
   viewCount     Int               @default(0)
 
   // Unified Generate/Create composer fields (shared layout - see PassageMetaFields).
@@ -268,9 +279,40 @@ model Article {
   likes            ArticleLike[]
   attempts         ArticleAttempt[]
   ratings          ArticleRating[]
+  studyLists       StudyListArticle[]
 
   @@index([userId])
   @@index([visibility])
+  @@index([status])
+}
+
+// User-created grouping of their own articles ("Study Lists" in My Articles -
+// deliberately separate from Category, which is now Community-only per the
+// Articles-hub spec). Many-to-many via StudyListArticle since one article can
+// sit in multiple lists.
+model StudyList {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articles StudyListArticle[]
+
+  @@index([userId])
+}
+
+model StudyListArticle {
+  studyListId String
+  articleId   String
+  addedAt     DateTime @default(now())
+
+  studyList StudyList @relation(fields: [studyListId], references: [id], onDelete: Cascade)
+  article   Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@id([studyListId, articleId])
+  @@index([articleId])
 }
 
 // A user's saved text-selection highlight within a passage. Offsets are plain

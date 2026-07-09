@@ -254,10 +254,104 @@ export function useGenerateListeningExercise() {
 }
 
 // ---------- Reading ----------
-export function useArticles(category?: string) {
+// My Articles filter: deliberately no "category" here in the new Articles-hub
+// UI (Category is Community-only) - Study Lists/Tags/status/search/sort are
+// the filtering axes for My Articles instead. `category` still exists as a
+// param the server accepts (harmless, unused by the current UI).
+export interface ArticleListFilter {
+  category?: string;
+  search?: string;
+  tags?: string[];
+  studyListId?: string;
+  status?: "DRAFT" | "PUBLISHED" | "ARCHIVED";
+  sort?: "newest" | "oldest" | "title";
+}
+
+export function useArticles(filter: ArticleListFilter = {}) {
   return useQuery({
-    queryKey: ["articles", category],
-    queryFn: async () => (await api.get<Article[]>("/reading/articles", { params: { category } })).data,
+    queryKey: ["articles", filter],
+    queryFn: async () =>
+      (
+        await api.get<Article[]>("/reading/articles", {
+          params: {
+            category: filter.category,
+            search: filter.search,
+            tags: filter.tags?.length ? filter.tags.join(",") : undefined,
+            studyListId: filter.studyListId,
+            status: filter.status,
+            sort: filter.sort,
+          },
+        })
+      ).data,
+  });
+}
+
+export interface StudyList {
+  id: string;
+  name: string;
+  createdAt: string;
+  articleCount: number;
+}
+
+export function useStudyLists() {
+  return useQuery({
+    queryKey: ["study-lists"],
+    queryFn: async () => (await api.get<StudyList[]>("/reading/study-lists")).data,
+  });
+}
+
+export function useCreateStudyList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) => (await api.post<StudyList>("/reading/study-lists", { name })).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["study-lists"] }),
+  });
+}
+
+export function useRenameStudyList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, name }: { id: string; name: string }) =>
+      (await api.patch<{ id: string; name: string }>(`/reading/study-lists/${id}`, { name })).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["study-lists"] }),
+  });
+}
+
+export function useDeleteStudyList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/reading/study-lists/${id}`);
+      return { id };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["study-lists"] });
+      qc.invalidateQueries({ queryKey: ["articles"] });
+    },
+  });
+}
+
+export function useAddArticleToStudyList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ studyListId, articleId }: { studyListId: string; articleId: string }) =>
+      (await api.post(`/reading/study-lists/${studyListId}/articles`, { articleId })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["study-lists"] });
+      qc.invalidateQueries({ queryKey: ["articles"] });
+    },
+  });
+}
+
+export function useRemoveArticleFromStudyList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ studyListId, articleId }: { studyListId: string; articleId: string }) =>
+      (await api.delete(`/reading/study-lists/${studyListId}/articles/${articleId}`)).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["study-lists"] });
+      qc.invalidateQueries({ queryKey: ["articles"] });
+    },
   });
 }
 
@@ -438,6 +532,7 @@ export interface PassageDetail {
   cefrLevel?: string | null;
   testMode?: string | null;
   visibility: "PRIVATE" | "PUBLIC" | "UNLISTED";
+  status?: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   viewCount: number;
   createdAt: string;
   authorId: string;
@@ -473,13 +568,14 @@ export interface UpdatePassagePayload {
   vocabulary?: VocabularyItem[];
   questions?: ReadingQuestion[];
   visibility?: string;
+  status?: "DRAFT" | "PUBLISHED" | "ARCHIVED";
 }
 
 export function useUpdatePassage() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, ...payload }: UpdatePassagePayload) =>
-      (await api.patch<{ id: string; visibility: string }>(`/reading/passages/${id}`, payload)).data,
+      (await api.patch<{ id: string; visibility: string; status: string }>(`/reading/passages/${id}`, payload)).data,
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["passage", vars.id] });
       qc.invalidateQueries({ queryKey: ["community"] });
@@ -510,10 +606,39 @@ export function useCreatePassage() {
   });
 }
 
-export function useCommunityPassages() {
+export function useDuplicatePassage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => (await api.post<{ id: string }>(`/reading/passages/${id}/duplicate`)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["articles"] }),
+  });
+}
+
+// Community browsing filters - Category/Difficulty/Tags live here only (My
+// Articles uses Study Lists/Tags/status instead, no Category).
+export interface CommunityFilter {
+  search?: string;
+  category?: string;
+  difficulty?: string;
+  tags?: string[];
+  sort?: "latest" | "popular";
+}
+
+export function useCommunityPassages(filter: CommunityFilter = {}) {
   return useQuery({
-    queryKey: ["community"],
-    queryFn: async () => (await api.get<PassageDetail[]>("/reading/community")).data,
+    queryKey: ["community", filter],
+    queryFn: async () =>
+      (
+        await api.get<PassageDetail[]>("/reading/community", {
+          params: {
+            search: filter.search,
+            category: filter.category,
+            difficulty: filter.difficulty,
+            tags: filter.tags?.length ? filter.tags.join(",") : undefined,
+            sort: filter.sort,
+          },
+        })
+      ).data,
   });
 }
 

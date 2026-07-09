@@ -1,15 +1,16 @@
 import { NavLink } from "react-router-dom";
 import {
-  Home, BookOpen, Layers, Headphones, BookText, ListChecks, BarChart3, Sparkles,
+  Home, BookOpen, Layers, Headphones, BookText, ListChecks, BarChart3, Sparkles, Library,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { to: "/", label: "Home", icon: Home, end: true },
   { to: "/vocabulary", label: "Vocabulary", icon: BookOpen },
-  { to: "/flashcards", label: "Flashcards", icon: Layers },
-  { to: "/listening", label: "Listening", icon: Headphones },
+  { to: "/articles", label: "Articles", icon: Library },
   { to: "/reading", label: "Reading", icon: BookText },
+  { to: "/listening", label: "Listening", icon: Headphones },
+  { to: "/flashcards", label: "Flashcards", icon: Layers },
   { to: "/quiz", label: "Quiz", icon: ListChecks },
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
 ];

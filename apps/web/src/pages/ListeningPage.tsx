@@ -1,25 +1,21 @@
 import { useState, type ReactNode, type ComponentType } from "react";
-import { Link, useSearchParams } from "react-router-dom";
 import {
   Wand2, Headphones, BookOpen, Gem, BarChart3, FileText, Clock, Mic, Globe, Gauge,
   Sparkles, Sprout, Book, MessageCircle, TrendingUp, Star, Crown, Shuffle,
-  Check, Minus, Plus, Users, Eye, Heart, Pencil, Trash2,
+  Check, Minus, Plus,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
-  useGenerateListeningExercise, useCreatePassage, useArticles, useCommunityPassages, useDeleteArticle,
+  useGenerateListeningExercise, useCreatePassage,
   type ListeningExercise, type ReadingQuestion,
 } from "@/api/hooks";
 import ListeningWorkspace from "@/components/listening/ListeningWorkspace";
 import { speedToRate, type Accent, type VoiceGender } from "@/lib/tts";
 import { cn } from "@/lib/utils";
-import type { Article } from "@/types";
 
 const DIFFICULTY_CARDS: { value: string; icon: ComponentType<{ className?: string }>; title: string; description: string }[] = [
   { value: "AUTO", icon: Sparkles, title: "Auto", description: "AI selects the appropriate level" },
@@ -87,183 +83,29 @@ const QUESTION_TYPES = [
 ];
 const QUESTION_COUNTS = [5, 10, 15];
 
-type ListeningTab = "generate" | "community" | "library";
-const VALID_TABS: ListeningTab[] = ["generate", "community", "library"];
-
-// Listening exercises are stored as Article rows (category: "Listening") -
-// the same shared system Reading uses (per user's explicit choice), so
-// Generate/Community/My Articles here mirror ReadingPage's tab shell and
-// reuse ListeningWorkspace (which itself reuses usePassage/useUpdatePassage/
-// useDeleteArticle etc) for the actual play/practice/rate experience.
+// Listening exercises are stored as Article rows (category: "Listening") - the
+// same shared system Reading uses. My Articles / Community used to be tabs
+// here too; they now live in the Articles hub (/articles), so this page is
+// just the Generate flow. Saved exercises show up in Articles -> My Articles
+// automatically (createPassage below), and "Start Listening"/"Test Listening"
+// from there is how you come back to one.
 export default function ListeningPage() {
-  const [searchParams] = useSearchParams();
-  const tabParam = searchParams.get("tab") as ListeningTab | null;
-  const [tab, setTab] = useState<ListeningTab>(tabParam && VALID_TABS.includes(tabParam) ? tabParam : "generate");
-
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">🎧 Listening Practice</h1>
         <p className="text-sm text-muted-foreground">
-          Build a custom AI listening exercise, explore the community, or revisit your saved exercises.
+          Build a custom AI listening exercise. Saved exercises show up in Articles - My Articles.
         </p>
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as ListeningTab)}>
-        <TabsList>
-          <TabsTrigger value="generate">Generate with AI</TabsTrigger>
-          <TabsTrigger value="community">Community</TabsTrigger>
-          <TabsTrigger value="library">My Articles</TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {tab === "generate" && <ListeningGenerator />}
-      {tab === "community" && <ListeningCommunityTab />}
-      {tab === "library" && <ListeningLibrary />}
+      <ListeningGenerator />
     </div>
   );
 }
 
 // ============================================================================
-// Tab: My Articles - saved listening exercises (Article rows, category: Listening)
-// ============================================================================
-
-function ListeningLibrary() {
-  const { data: articles, isLoading } = useArticles("Listening");
-
-  return (
-    <div className="space-y-3">
-      {isLoading && <p className="text-sm text-muted-foreground">Loading...</p>}
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {articles?.map((a) => <ListeningArticleCard key={a.id} article={a} />)}
-      </div>
-
-      {!isLoading && articles?.length === 0 && (
-        <p className="py-10 text-center text-sm text-muted-foreground">
-          ยังไม่มีบทฟังที่บันทึกไว้ - ลองสร้างจากแท็บ "Generate with AI"
-        </p>
-      )}
-    </div>
-  );
-}
-
-function ListeningArticleCard({ article }: { article: Article }) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const deleteArticle = useDeleteArticle();
-
-  return (
-    <>
-      <Card className="group relative transition-shadow hover:shadow-md">
-        <Link to={`/listening/${article.id}`} className="block">
-          <CardContent className="flex items-center gap-3 p-4 pr-16">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-              <Headphones className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-medium">{article.title}</p>
-              <p className="text-xs text-muted-foreground">{new Date(article.createdAt).toLocaleDateString()}</p>
-            </div>
-          </CardContent>
-        </Link>
-        <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-          <Link
-            to={`/reading/${article.id}/edit`}
-            aria-label="Edit exercise"
-            title="Edit"
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <Pencil className="h-4 w-4" />
-          </Link>
-          <button
-            type="button"
-            aria-label="Delete exercise"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setConfirmOpen(true);
-            }}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
-      </Card>
-
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete "{article.title}"?</DialogTitle>
-            <DialogDescription>
-              This permanently deletes the listening exercise along with its questions and stats. This can't be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
-            <Button
-              variant="destructive"
-              disabled={deleteArticle.isPending}
-              onClick={() => deleteArticle.mutate(article.id, { onSuccess: () => setConfirmOpen(false) })}
-            >
-              {deleteArticle.isPending ? "Deleting..." : "Delete"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-// ============================================================================
-// Tab: Community - public listening exercises from other users
-// ============================================================================
-
-function ListeningCommunityTab() {
-  const { data: passages, isLoading } = useCommunityPassages();
-  const listening = (passages ?? []).filter((p) => p.category === "Listening");
-
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
-
-  if (listening.length === 0) {
-    return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center text-sm text-muted-foreground">
-        <Users className="h-8 w-8" />
-        <p>ยังไม่มีบทฟังสาธารณะ - ลอง Publish บทฟังของคุณจากแท็บ "Generate with AI" ดูก่อน</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      {listening.map((p) => (
-        <Card key={p.id} className="flex flex-col">
-          <CardContent className="flex flex-1 flex-col gap-2 p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="font-semibold">{p.title}</p>
-                <p className="text-xs text-muted-foreground">โดย {p.authorName}</p>
-              </div>
-              {p.cefrLevel && <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-xs">{p.cefrLevel}</span>}
-            </div>
-            <div className="flex items-center gap-3 pt-1 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1"><Eye className="h-3.5 w-3.5" />{p.stats.views}</span>
-              <span className="flex items-center gap-1"><Star className="h-3.5 w-3.5" />{p.stats.avgRating ?? "-"}</span>
-              <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5" />{p.stats.likes}</span>
-            </div>
-            <Button asChild size="sm" className="mt-1 w-full gap-1.5">
-              <Link to={`/listening/${p.id}`}>
-                <Headphones className="h-3.5 w-3.5" /> Listen
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
-
-// ============================================================================
-// Tab: Generate with AI - Setup wizard, then persist + hand off to ListeningWorkspace
+// Generate with AI - Setup wizard, then persist + hand off to ListeningWorkspace
 // ============================================================================
 
 function ListeningGenerator() {
@@ -339,7 +181,7 @@ function ListeningGenerator() {
           setExerciseTitle(title);
           setArticleId(null);
           // Persist the generated exercise as an Article (category: "Listening") so
-          // it shows up under My Articles / Community, gets Edit/Test/Rate support,
+          // it shows up under Articles -> My Articles, gets Edit/Test/Rate support,
           // and can be reopened later - same shared system Reading uses.
           createPassage.mutate(
             {

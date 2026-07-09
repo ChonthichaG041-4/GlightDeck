@@ -24,15 +24,118 @@ const articleInput = z.object({
   source: z.string().optional(),
 });
 
+// My Articles: Category is intentionally NOT a filter here (Category is a
+// Community-browsing concept per the Articles-hub IA) - instead: search
+// (title), tags (comma-separated, matches any), studyListId (membership),
+// status (DRAFT/PUBLISHED/ARCHIVED), and sort (newest default/oldest/title).
+// `category` query param is still accepted server-side (harmless, used
+// nowhere in the new UI) so nothing else calling this endpoint breaks.
 router.get("/articles", async (req, res) => {
   const user = getDbUser(req);
-  const { category } = req.query as Record<string, string>;
+  const { category, search, tags, studyListId, status, sort } = req.query as Record<string, string>;
+  const tagList = tags ? tags.split(",").map((t) => t.trim()).filter(Boolean) : [];
+
+  const orderBy =
+    sort === "oldest" ? { createdAt: "asc" as const } :
+    sort === "title" ? { title: "asc" as const } :
+    { createdAt: "desc" as const };
+
   const articles = await prisma.article.findMany({
-    where: { userId: user.id, ...(category ? { category } : {}) },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, title: true, category: true, source: true, createdAt: true, visibility: true },
+    where: {
+      userId: user.id,
+      ...(category ? { category } : {}),
+      ...(status ? { status: status as "DRAFT" | "PUBLISHED" | "ARCHIVED" } : {}),
+      ...(tagList.length ? { tags: { hasSome: tagList } } : {}),
+      ...(search ? { title: { contains: search, mode: "insensitive" as const } } : {}),
+      ...(studyListId ? { studyLists: { some: { studyListId } } } : {}),
+    },
+    orderBy,
+    select: {
+      id: true, title: true, category: true, source: true, createdAt: true,
+      visibility: true, status: true, tags: true, cefrLevel: true,
+      studyLists: { select: { studyListId: true } },
+    },
   });
-  res.json(articles);
+  res.json(articles.map(({ studyLists, ...a }) => ({ ...a, studyListIds: studyLists.map((s) => s.studyListId) })));
+});
+
+// ---------------------------------------------------------------------------
+// Study Lists - user-created groupings of their own articles (My Articles).
+// Deliberately separate from Category (which stays Community-only): one
+// article can sit in multiple lists via the StudyListArticle join table.
+// ---------------------------------------------------------------------------
+
+const studyListInput = z.object({ name: z.string().min(1) });
+
+router.get("/study-lists", async (req, res) => {
+  const user = getDbUser(req);
+  const lists = await prisma.studyList.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, name: true, createdAt: true, _count: { select: { articles: true } } },
+  });
+  res.json(lists.map((l) => ({ id: l.id, name: l.name, createdAt: l.createdAt, articleCount: l._count.articles })));
+});
+
+router.post("/study-lists", async (req, res) => {
+  try {
+    const user = getDbUser(req);
+    const data = studyListInput.parse(req.body);
+    const list = await prisma.studyList.create({ data: { name: data.name, userId: user.id } });
+    res.status(201).json({ id: list.id, name: list.name, createdAt: list.createdAt, articleCount: 0 });
+  } catch (err: any) {
+    res.status(err?.name === "ZodError" ? 400 : 500).json({ error: err?.message ?? "Internal server error" });
+  }
+});
+
+router.patch("/study-lists/:id", async (req, res) => {
+  try {
+    const user = getDbUser(req);
+    const data = studyListInput.parse(req.body);
+    const existing = await prisma.studyList.findFirst({ where: { id: req.params.id, userId: user.id } });
+    if (!existing) return res.status(404).json({ error: "Study list not found" });
+    const updated = await prisma.studyList.update({ where: { id: existing.id }, data: { name: data.name } });
+    res.json({ id: updated.id, name: updated.name });
+  } catch (err: any) {
+    res.status(err?.name === "ZodError" ? 400 : 500).json({ error: err?.message ?? "Internal server error" });
+  }
+});
+
+router.delete("/study-lists/:id", async (req, res) => {
+  const user = getDbUser(req);
+  const existing = await prisma.studyList.findFirst({ where: { id: req.params.id, userId: user.id } });
+  if (!existing) return res.status(404).json({ error: "Study list not found" });
+  await prisma.studyList.delete({ where: { id: existing.id } });
+  res.status(204).end();
+});
+
+const studyListArticleInput = z.object({ articleId: z.string().min(1) });
+
+router.post("/study-lists/:id/articles", async (req, res) => {
+  try {
+    const user = getDbUser(req);
+    const data = studyListArticleInput.parse(req.body);
+    const list = await prisma.studyList.findFirst({ where: { id: req.params.id, userId: user.id } });
+    if (!list) return res.status(404).json({ error: "Study list not found" });
+    const article = await prisma.article.findFirst({ where: { id: data.articleId, userId: user.id } });
+    if (!article) return res.status(404).json({ error: "Article not found" });
+    await prisma.studyListArticle.upsert({
+      where: { studyListId_articleId: { studyListId: list.id, articleId: article.id } },
+      create: { studyListId: list.id, articleId: article.id },
+      update: {},
+    });
+    res.status(201).json({ ok: true });
+  } catch (err: any) {
+    res.status(err?.name === "ZodError" ? 400 : 500).json({ error: err?.message ?? "Internal server error" });
+  }
+});
+
+router.delete("/study-lists/:id/articles/:articleId", async (req, res) => {
+  const user = getDbUser(req);
+  const list = await prisma.studyList.findFirst({ where: { id: req.params.id, userId: user.id } });
+  if (!list) return res.status(404).json({ error: "Study list not found" });
+  await prisma.studyListArticle.deleteMany({ where: { studyListId: list.id, articleId: req.params.articleId } });
+  res.status(204).end();
 });
 
 router.get("/articles/:id", async (req, res) => {
@@ -523,6 +626,7 @@ function summarizeArticle(article: any, viewerId: string) {
     cefrLevel: article.cefrLevel,
     testMode: article.testMode,
     visibility: article.visibility,
+    status: article.status,
     viewCount: article.viewCount,
     createdAt: article.createdAt,
     authorId: article.userId,
@@ -584,6 +688,49 @@ router.get("/passages/:id", async (req, res) => {
   }
 });
 
+// POST /api/reading/passages/:id/duplicate - clone any article the caller can
+// currently read (their own, or someone else's PUBLIC/UNLISTED one) into a
+// new PRIVATE article they own. Used by the Article Detail page's "Duplicate"
+// action - handy both for "make a backup before editing" and for "save a copy
+// of this community article into my own library".
+router.post("/passages/:id/duplicate", async (req, res) => {
+  try {
+    const user = getDbUser(req);
+    const article: any = await prisma.article.findUnique({ where: { id: req.params.id } });
+    if (!article) return res.status(404).json({ error: "Article not found" });
+    if (article.userId !== user.id && article.visibility === "PRIVATE") {
+      return res.status(403).json({ error: "This article is private" });
+    }
+
+    const copy = await prisma.article.create({
+      data: {
+        userId: user.id,
+        title: `Copy of ${article.title}`,
+        category: article.category,
+        content: article.content,
+        source: article.source,
+        description: article.description,
+        tags: article.tags ?? [],
+        contentSource: article.contentSource,
+        blocksJson: article.blocksJson ?? undefined,
+        vocabularyMode: article.vocabularyMode,
+        vocabularyJson: article.vocabularyJson ?? undefined,
+        translation: article.translation,
+        questionsJson: article.questionsJson ?? undefined,
+        examMode: article.examMode,
+        cefrLevel: article.cefrLevel,
+        testMode: article.testMode,
+        visibility: "PRIVATE",
+      },
+      select: { id: true },
+    });
+    res.status(201).json({ id: copy.id });
+  } catch (err: any) {
+    console.error("Duplicate article failed:", err?.message ?? err);
+    res.status(500).json({ error: err?.message ?? "Internal server error" });
+  }
+});
+
 const CONTENT_SOURCES = ["AI_GENERATE", "WRITE_MANUALLY", "PASTE_TEXT", "IMPORT_DOCX", "IMPORT_PDF", "IMPORT_MARKDOWN", "IMPORT_BOOK"] as const;
 const VOCAB_MODES = ["AUTO", "MANUAL", "NONE"] as const;
 const vocabularyItemSchema = z.object({ headword: z.string().min(1), meaning: z.string().default(""), ipa: z.string().nullable().optional() });
@@ -604,9 +751,13 @@ const updatePassageInput = z.object({
   vocabulary: z.array(vocabularyItemSchema).optional(),
   questions: z.array(z.any()).optional(),
   visibility: z.enum(["PRIVATE", "PUBLIC", "UNLISTED"]).optional(),
+  status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).optional(),
 });
 
-// PATCH /api/reading/passages/:id - owner-only: rename, edit content/questions, publish/unpublish.
+// PATCH /api/reading/passages/:id - owner-only: rename, edit content/questions, publish/unpublish,
+// change status (Draft/Published/Archived - My Articles). Publishing (visibility -> PUBLIC)
+// implicitly marks status PUBLISHED too unless the caller explicitly sent a status of its own,
+// so the existing "Publish" UI (which only ever sends visibility) doesn't need to change.
 router.patch("/passages/:id", async (req, res) => {
   try {
     const user = getDbUser(req);
@@ -635,9 +786,10 @@ router.patch("/passages/:id", async (req, res) => {
         ...(data.vocabulary ? { vocabularyJson: data.vocabulary } : {}),
         ...(data.questions ? { questionsJson: data.questions } : {}),
         ...(data.visibility ? { visibility: data.visibility } : {}),
+        ...(data.status ? { status: data.status } : data.visibility === "PUBLIC" ? { status: "PUBLISHED" as const } : {}),
       },
     });
-    res.json({ id: updated.id, visibility: updated.visibility });
+    res.json({ id: updated.id, visibility: updated.visibility, status: updated.status });
   } catch (err: any) {
     console.error("Update passage failed:", err?.message ?? err);
     res.status(err?.name === "ZodError" ? 400 : 500).json({ error: err?.message ?? "Internal server error" });
@@ -896,7 +1048,12 @@ const BOOK_IMPORT_JSON_SHAPE = `Reply with ONLY a single JSON object with exactl
 
 const BOOK_IMPORT_USER_PROMPT = `Parse the attached page image(s) as a single reading exercise.
 
-1. Merge all pages into one logical document.
+1. Merge all pages into one logical document. The pages are not necessarily in reading order and
+   are not necessarily adjacent in the source book - workbooks commonly print the answer key for
+   an exercise in a completely different section (often near the front of the book, titled
+   "Answer <exercise/level name>") from the exercise's own passage and question pages. Treat every
+   uploaded image as belonging to this ONE exercise regardless of where in the book it came from -
+   never treat an answer-key page as a second, separate exercise.
 2. Extract metadata: the exercise title (if present), the reading/grade level if explicitly
    stated on the page (e.g. "Reading Comprehension Level 3" -> "Level 3"), and the instruction
    line(s) telling the reader what to do (e.g. "Read the following passage."). Use null for any
@@ -918,6 +1075,26 @@ const BOOK_IMPORT_USER_PROMPT = `Parse the attached page image(s) as a single re
    - "Complete the summary" with several blanks referencing the passage -> return one FILL_BLANK
      question per blank, in reading order.
    - A free-response/opinion prompt with no single correct answer -> ESSAY.
+4a. ANSWER KEY PAGES - if any uploaded page is an answer key/answer sheet (typically titled
+   "Answer <exercise or level name>", listing answers by question number, sometimes under an
+   "Exercise N" sub-heading), it is NOT a separate exercise to import and must NEVER be turned
+   into extra questions of its own. Its only purpose is supplying the correct "answer" text for
+   the matching question numbers of the SAME exercise you are extracting:
+   - If the answer-key page groups answers under multiple exercise numbers/headings (e.g.
+     "Exercise 6", "Exercise 7", "Exercise 8" all on one page), use only the block whose heading
+     matches this exercise (matched by exercise number/name if printed anywhere on the passage or
+     question pages, otherwise by matching the count/order of questions); ignore the other blocks.
+   - Match answer-key entries to questions strictly by printed question number (answer-key #3 ->
+     question #3), not by position on the page.
+   - Always prefer the answer-key's text for a question's "answer" field over what is written on
+     the question page itself, especially when the question page only shows a blank writing line
+     or empty box with no legible handwritten answer - the answer key is the authoritative source
+     of the correct answer in that case.
+   - If an answer key explicitly says something like "Other answers with the same context are also
+     acceptable" before a numbered list, still use that numbered list as the model "answer" for
+     each matching question (it is the expected/reference answer, not a discouraged one).
+   - Only leave "answer" as an empty string if truly no answer-key content exists anywhere in the
+     uploaded images for that question number.
 5. Educational Analysis - for every question, in addition to (not instead of) the structural
    fields above, add:
    - skill: the specific reading/language skill being tested, e.g. "Main Idea", "Detail",
@@ -1016,13 +1193,28 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
 });
 
 // GET /api/reading/community - browse PUBLIC passages from every user.
+// Supports search (title), category, difficulty (cefrLevel exact match),
+// tags (comma-separated, matches any), and sort (latest default / popular =
+// most-liked). Category/Difficulty/Tags are Community-only filters per the
+// Articles-hub IA (My Articles uses Study Lists/Tags/status instead).
 router.get("/community", async (req, res) => {
   try {
     const user = getDbUser(req);
+    const { search, category, difficulty, tags, sort } = req.query as Record<string, string>;
+    const tagList = tags ? tags.split(",").map((t) => t.trim()).filter(Boolean) : [];
+    const orderBy = sort === "popular" ? { likes: { _count: "desc" as const } } : { createdAt: "desc" as const };
+
     const articles: any[] = await prisma.article.findMany({
-      where: { visibility: "PUBLIC" },
+      where: {
+        visibility: "PUBLIC",
+        status: { not: "ARCHIVED" },
+        ...(category ? { category } : {}),
+        ...(difficulty ? { cefrLevel: difficulty } : {}),
+        ...(tagList.length ? { tags: { hasSome: tagList } } : {}),
+        ...(search ? { title: { contains: search, mode: "insensitive" as const } } : {}),
+      },
       include: PASSAGE_INCLUDE,
-      orderBy: { createdAt: "desc" },
+      orderBy,
       take: 50,
     });
     res.json(

@@ -9,6 +9,8 @@ import { useAttachAuthToken } from "@/api/client";
 // wizard, Statistics' recharts, etc. were all landing in one giant bundle that
 // every route had to wait on before it could render).
 const HomePage = lazy(() => import("@/pages/HomePage"));
+const ArticlesPage = lazy(() => import("@/pages/ArticlesPage"));
+const ArticleDetailPage = lazy(() => import("@/pages/ArticleDetailPage"));
 const VocabularyPage = lazy(() => import("@/pages/VocabularyPage"));
 const FlashcardsPage = lazy(() => import("@/pages/FlashcardsPage"));
 const ListeningPage = lazy(() => import("@/pages/ListeningPage"));
@@ -58,6 +60,8 @@ export default function App() {
         <Route element={<ProtectedShell />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/vocabulary" element={<VocabularyPage />} />
+          <Route path="/articles" element={<ArticlesPage />} />
+          <Route path="/articles/:id" element={<ArticleDetailPage />} />
           <Route path="/flashcards" element={<FlashcardsPage />} />
           <Route path="/listening" element={<ListeningPage />} />
           <Route path="/listening/:id" element={<ListeningReaderPage />} />

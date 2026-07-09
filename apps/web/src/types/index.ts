@@ -70,6 +70,10 @@ export interface Article {
   source?: string | null;
   createdAt: string;
   visibility?: "PRIVATE" | "UNLISTED" | "PUBLIC";
+  status?: "DRAFT" | "PUBLISHED" | "ARCHIVED";
+  tags?: string[];
+  cefrLevel?: string | null;
+  studyListIds?: string[];
 }
 
 export interface SentenceBookmark {
