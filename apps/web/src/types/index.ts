@@ -69,6 +69,7 @@ export interface Article {
   content?: string;
   source?: string | null;
   createdAt: string;
+  visibility?: "PRIVATE" | "UNLISTED" | "PUBLIC";
 }
 
 export interface SentenceBookmark {

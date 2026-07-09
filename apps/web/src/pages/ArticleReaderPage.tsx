@@ -32,6 +32,7 @@ export default function ArticleReaderPage() {
       testMode={passage.testMode ?? "READING_ONLY"}
       metaLine={passage.cefrLevel ?? passage.category}
       onBack={() => navigate("/reading")}
+      readOnly={passage.isOwner === false}
     />
   );
 }

@@ -1,12 +1,21 @@
 import { Router } from "express";
+import multer from "multer";
+import mammoth from "mammoth";
+import { marked } from "marked";
 import { z } from "zod";
 import { GoogleGenAI, Type } from "@google/genai";
 import { prisma } from "../db";
 import { getDbUser } from "../middleware/auth";
 import { LANG_NAMES } from "../lib/wordLookup";
 import { withGeminiRetry, friendlyGeminiError } from "../lib/gemini";
+import { blocksToPlainText, randomBlockId, type Block } from "../lib/blocks";
+import { callOpenRouterVision, withOpenRouterRetry, friendlyOpenRouterError, extractJsonObject } from "../lib/openrouter";
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+// Import Book/Reading (OCR): a handful of page photos, each can be a bit larger than a
+// typical DOCX/PDF upload (phone camera photos), and there can be several pages at once.
+const uploadImages = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 12 } });
 
 const articleInput = z.object({
   title: z.string().min(1),
@@ -21,7 +30,7 @@ router.get("/articles", async (req, res) => {
   const articles = await prisma.article.findMany({
     where: { userId: user.id, ...(category ? { category } : {}) },
     orderBy: { createdAt: "desc" },
-    select: { id: true, title: true, category: true, source: true, createdAt: true },
+    select: { id: true, title: true, category: true, source: true, createdAt: true, visibility: true },
   });
   res.json(articles);
 });
@@ -93,9 +102,11 @@ const READING_SKILLS = [
 ] as const;
 const CONCRETE_READING_SKILLS = READING_SKILLS.filter((s) => s !== "MIXED");
 const QUESTION_TYPES = ["MULTIPLE_CHOICE", "TRUE_FALSE", "YES_NO_NOTGIVEN", "FILL_BLANK", "SHORT_ANSWER", "MATCHING", "ORDERING", "ESSAY", "HIGHLIGHT_SENTENCE", "CLICK_WORD", "MIXED"] as const;
-// MATCHING/ORDERING/ESSAY/HIGHLIGHT_SENTENCE/CLICK_WORD don't have an interactive
-// UI yet, so if requested they're generated as MULTIPLE_CHOICE for now.
-const CONCRETE_QUESTION_TYPES = ["MULTIPLE_CHOICE", "TRUE_FALSE", "YES_NO_NOTGIVEN", "FILL_BLANK", "SHORT_ANSWER"];
+// MATCHING/ORDERING are authored manually via the Create Mode Question Builder
+// (their pairs/items shape doesn't fit this flat prompt/options/answer schema) -
+// HIGHLIGHT_SENTENCE/CLICK_WORD still don't have an interactive UI, so if
+// requested they're generated as MULTIPLE_CHOICE for now.
+const CONCRETE_QUESTION_TYPES = ["MULTIPLE_CHOICE", "TRUE_FALSE", "YES_NO_NOTGIVEN", "FILL_BLANK", "SHORT_ANSWER", "ESSAY"];
 
 const SKILL_LABELS: Record<string, string> = {
   MAIN_IDEA: "Main Idea", DETAIL: "Detail", INFERENCE: "Inference",
@@ -155,6 +166,8 @@ const generateReadingInput = z
     topic: z.string().optional().default(""),
     passageSource: z.enum(PASSAGE_SOURCES).default("AI_GENERATE"),
     manualText: z.string().optional().default(""),
+    description: z.string().optional().default(""),
+    tags: z.array(z.string()).optional().default([]),
     cefrLevel: z.enum(CEFR).default("AUTO"),
     examMode: z.enum(EXAM_MODES).default("GENERAL_ENGLISH"),
     length: z.enum(LENGTHS).default("MEDIUM"),
@@ -237,6 +250,7 @@ Use only these question types: ${concreteTypes.join(", ")}.
 - For YES_NO_NOTGIVEN: options must be exactly ["Yes", "No", "Not Given"].
 - For FILL_BLANK: options must be empty; put the missing word/phrase in "answer".
 - For SHORT_ANSWER: options must be empty; put a concise model answer in "answer".
+- For ESSAY: options must be empty; put a short model answer / grading rubric note in "answer" (the reader writes free text - not auto-graded).
 Each question must have "type" set to one of ${CONCRETE_QUESTION_TYPES.join(", ")} (never "MIXED"),
 and "skill" set to a specific skill (never "MIXED"). Keep phrasing consistent with the Exam Mode
 specified above (${EXAM_MODE_LABELS[input.examMode]}).`;
@@ -313,6 +327,9 @@ async function persistGeneratedArticle(userId: string, input: ReadingInput, exer
       userId,
       title: exercise.title,
       category: "AI Generated",
+      description: input.description || undefined,
+      tags: input.tags ?? [],
+      contentSource: "AI_GENERATE",
       content: exercise.passage,
       translation: exercise.translation ?? null,
       questionsJson: exercise.questions ?? undefined,
@@ -494,6 +511,12 @@ function summarizeArticle(article: any, viewerId: string) {
     title: article.title,
     category: article.category,
     content: article.content,
+    description: article.description ?? null,
+    tags: article.tags ?? [],
+    contentSource: article.contentSource ?? null,
+    blocks: article.blocksJson ?? null,
+    vocabularyMode: article.vocabularyMode ?? "NONE",
+    vocabulary: article.vocabularyJson ?? null,
     translation: article.translation,
     questions: article.questionsJson ?? null,
     examMode: article.examMode,
@@ -561,9 +584,24 @@ router.get("/passages/:id", async (req, res) => {
   }
 });
 
+const CONTENT_SOURCES = ["AI_GENERATE", "WRITE_MANUALLY", "PASTE_TEXT", "IMPORT_DOCX", "IMPORT_PDF", "IMPORT_MARKDOWN", "IMPORT_BOOK"] as const;
+const VOCAB_MODES = ["AUTO", "MANUAL", "NONE"] as const;
+const vocabularyItemSchema = z.object({ headword: z.string().min(1), meaning: z.string().default(""), ipa: z.string().nullable().optional() });
+const blockSchema = z.any(); // rich-block shape validated loosely - see lib/blocks.ts Block union
+
 const updatePassageInput = z.object({
   title: z.string().min(1).optional(),
+  description: z.string().optional(),
+  category: z.string().optional(),
+  tags: z.array(z.string()).optional(),
   content: z.string().min(1).optional(),
+  translation: z.string().optional(),
+  blocks: z.array(blockSchema).optional(),
+  contentSource: z.enum(CONTENT_SOURCES).optional(),
+  cefrLevel: z.string().optional(),
+  testMode: z.string().optional(),
+  vocabularyMode: z.enum(VOCAB_MODES).optional(),
+  vocabulary: z.array(vocabularyItemSchema).optional(),
   questions: z.array(z.any()).optional(),
   visibility: z.enum(["PRIVATE", "PUBLIC", "UNLISTED"]).optional(),
 });
@@ -576,11 +614,25 @@ router.patch("/passages/:id", async (req, res) => {
     const existing = await prisma.article.findFirst({ where: { id: req.params.id, userId: user.id } });
     if (!existing) return res.status(404).json({ error: "Passage not found" });
 
+    // If blocks were sent, they're the source of truth - keep the plain-text
+    // `content` mirror in sync automatically so nothing else needs to change.
+    const content = data.blocks ? blocksToPlainText(data.blocks as Block[]) : data.content;
+
     const updated = await prisma.article.update({
       where: { id: existing.id },
       data: {
         ...(data.title ? { title: data.title } : {}),
-        ...(data.content ? { content: data.content } : {}),
+        ...(data.description !== undefined ? { description: data.description } : {}),
+        ...(data.category ? { category: data.category } : {}),
+        ...(data.tags ? { tags: data.tags } : {}),
+        ...(content ? { content } : {}),
+        ...(data.translation !== undefined ? { translation: data.translation } : {}),
+        ...(data.blocks ? { blocksJson: data.blocks } : {}),
+        ...(data.contentSource ? { contentSource: data.contentSource } : {}),
+        ...(data.cefrLevel ? { cefrLevel: data.cefrLevel } : {}),
+        ...(data.testMode ? { testMode: data.testMode } : {}),
+        ...(data.vocabularyMode ? { vocabularyMode: data.vocabularyMode } : {}),
+        ...(data.vocabulary ? { vocabularyJson: data.vocabulary } : {}),
         ...(data.questions ? { questionsJson: data.questions } : {}),
         ...(data.visibility ? { visibility: data.visibility } : {}),
       },
@@ -594,9 +646,20 @@ router.patch("/passages/:id", async (req, res) => {
 
 const createPassageInput = z.object({
   title: z.string().min(1),
-  content: z.string().min(1),
+  description: z.string().optional(),
+  content: z.string().optional(),
+  translation: z.string().optional(),
+  blocks: z.array(blockSchema).optional(),
   category: z.string().default("My Passage"),
+  tags: z.array(z.string()).optional(),
+  contentSource: z.enum(CONTENT_SOURCES).optional(),
+  cefrLevel: z.string().optional(),
+  testMode: z.string().optional(),
+  vocabularyMode: z.enum(VOCAB_MODES).optional(),
+  vocabulary: z.array(vocabularyItemSchema).optional(),
   questions: z.array(z.any()).optional(),
+}).refine((v) => (v.blocks && v.blocks.length > 0) || !!v.content?.trim(), {
+  message: "Provide either blocks or content",
 });
 
 // POST /api/reading/passages - Create Mode: save a self-authored passage as a new draft.
@@ -604,12 +667,24 @@ router.post("/passages", async (req, res) => {
   try {
     const user = getDbUser(req);
     const data = createPassageInput.parse(req.body);
+    const content = data.blocks?.length ? blocksToPlainText(data.blocks as Block[]) : (data.content ?? "").trim();
+    if (!content) return res.status(400).json({ error: "Passage has no content" });
+
     const article = await prisma.article.create({
       data: {
         userId: user.id,
         title: data.title,
+        description: data.description,
         category: data.category,
-        content: data.content,
+        tags: data.tags ?? [],
+        content,
+        translation: data.translation,
+        blocksJson: data.blocks ?? undefined,
+        contentSource: data.contentSource,
+        cefrLevel: data.cefrLevel,
+        testMode: data.testMode,
+        vocabularyMode: data.vocabularyMode ?? "NONE",
+        vocabularyJson: data.vocabulary ?? undefined,
         questionsJson: data.questions ?? undefined,
         visibility: "PRIVATE",
       },
@@ -618,6 +693,325 @@ router.post("/passages", async (req, res) => {
   } catch (err: any) {
     console.error("Create passage failed:", err?.message ?? err);
     res.status(err?.name === "ZodError" ? 400 : 500).json({ error: err?.message ?? "Internal server error" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Create Mode: import an existing document as blocks - POST /api/reading/import/*
+//
+// Each returns { title, blocks, content } (content is the flattened plain-text
+// mirror, same as everywhere else) so the frontend can drop the result straight
+// into the Block Editor. These are best-effort text/structure extractions, not
+// pixel-perfect document conversion:
+//   - DOCX: mammoth extracts the raw text; paragraph-split into PARAGRAPH blocks.
+//   - PDF: pdf-parse extracts raw text; paragraph-split into PARAGRAPH blocks.
+//   - Markdown: `marked`'s lexer gives real structured tokens, so headings,
+//     blockquotes, code fences, and horizontal rules map directly to their
+//     matching block types (the richest of the three imports).
+// "Import Book/Reading" (OCR from test-paper images) is intentionally not
+// implemented yet - a future pass.
+// ---------------------------------------------------------------------------
+
+function deriveTitleFromParagraphs(paragraphs: string[]): string {
+  const firstLine = (paragraphs[0] ?? "").trim();
+  const words = firstLine.split(/\s+/).slice(0, 8).join(" ");
+  return words.length < firstLine.length ? `${words}...` : words || "Imported Passage";
+}
+
+function paragraphsToBlocks(text: string): Block[] {
+  return text
+    .split(/\r?\n\s*\r?\n/)
+    .map((p) => p.replace(/\r?\n/g, " ").trim())
+    .filter(Boolean)
+    .map((p) => ({ id: randomBlockId(), type: "PARAGRAPH" as const, text: p }));
+}
+
+router.post("/import/docx", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    const { value: text } = await mammoth.extractRawText({ buffer: req.file.buffer });
+    const blocks = paragraphsToBlocks(text);
+    if (!blocks.length) return res.status(400).json({ error: "ไม่พบข้อความในไฟล์ DOCX นี้" });
+    res.json({ title: deriveTitleFromParagraphs(blocks.map((b: any) => b.text)), blocks, content: blocksToPlainText(blocks) });
+  } catch (err: any) {
+    console.error("DOCX import failed:", err?.message ?? err);
+    res.status(500).json({ error: "แปลงไฟล์ DOCX ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" });
+  }
+});
+
+router.post("/import/pdf", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    const pdfParse = (await import("pdf-parse")).default;
+    const { text } = await pdfParse(req.file.buffer);
+    const blocks = paragraphsToBlocks(text);
+    if (!blocks.length) return res.status(400).json({ error: "ไม่พบข้อความในไฟล์ PDF นี้ (อาจเป็นไฟล์สแกนภาพ - ยังไม่รองรับ OCR)" });
+    res.json({ title: deriveTitleFromParagraphs(blocks.map((b: any) => b.text)), blocks, content: blocksToPlainText(blocks) });
+  } catch (err: any) {
+    console.error("PDF import failed:", err?.message ?? err);
+    res.status(500).json({ error: "แปลงไฟล์ PDF ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" });
+  }
+});
+
+const importMarkdownInput = z.object({ text: z.string().min(1) });
+
+router.post("/import/markdown", async (req, res) => {
+  try {
+    const { text } = importMarkdownInput.parse(req.body);
+    const tokens = marked.lexer(text);
+    const blocks: Block[] = [];
+
+    for (const token of tokens as any[]) {
+      switch (token.type) {
+        case "heading":
+          blocks.push({ id: randomBlockId(), type: "HEADING", level: Math.min(3, Math.max(1, token.depth)) as 1 | 2 | 3, text: token.text });
+          break;
+        case "paragraph":
+          if (token.text?.trim()) blocks.push({ id: randomBlockId(), type: "PARAGRAPH", text: token.text });
+          break;
+        case "blockquote": {
+          const quoteText = (token.tokens ?? []).map((t: any) => t.text ?? "").join(" ").trim() || token.text || "";
+          if (quoteText) blocks.push({ id: randomBlockId(), type: "QUOTE", text: quoteText });
+          break;
+        }
+        case "code":
+          blocks.push({ id: randomBlockId(), type: "CODE", code: token.text ?? "", language: token.lang || undefined });
+          break;
+        case "hr":
+          blocks.push({ id: randomBlockId(), type: "DIVIDER" });
+          break;
+        case "table": {
+          const header: string[] = (token.header ?? []).map((c: any) => c.text ?? String(c));
+          const rows: string[][] = (token.rows ?? []).map((row: any[]) => row.map((c: any) => c.text ?? String(c)));
+          blocks.push({ id: randomBlockId(), type: "TABLE", rows: [header, ...rows] });
+          break;
+        }
+        case "list": {
+          const items = (token.items ?? []).map((it: any) => `- ${it.text ?? ""}`).join("\n");
+          if (items.trim()) blocks.push({ id: randomBlockId(), type: "PARAGRAPH", text: items });
+          break;
+        }
+        default:
+          break; // space, html, def, etc. - skipped
+      }
+    }
+
+    if (!blocks.length) return res.status(400).json({ error: "ไม่พบเนื้อหาที่แปลงได้ในข้อความ Markdown นี้" });
+    res.json({
+      title: deriveTitleFromParagraphs(blocks.filter((b) => b.type === "HEADING" || b.type === "PARAGRAPH").map((b: any) => b.text)),
+      blocks,
+      content: blocksToPlainText(blocks),
+    });
+  } catch (err: any) {
+    console.error("Markdown import failed:", err?.message ?? err);
+    res.status(err?.name === "ZodError" ? 400 : 500).json({ error: "แปลง Markdown ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Import Book/Reading (OCR) - POST /api/reading/import/book
+//
+// "Document Structure Parser" pipeline, condensed into a single multimodal
+// vision-language model call instead of a separate OCR + layout + parser
+// stage-by-stage service. Runs on OpenRouter + Qwen2.5-VL (see lib/openrouter.ts)
+// rather than Gemini - a deliberate per-feature choice (Import Book/Reading's
+// per-page-image cost adds up fastest of any AI feature here, and a free vision
+// model is a good fit for it specifically). Every other AI feature in this app
+// still runs on Gemini - this is the only route that doesn't. Backs the
+// multi-step Import Wizard on the frontend (Upload -> Review Pages -> AI
+// Processing -> Review Results -> Save):
+//   1. Image Understanding - every uploaded page photo is sent in ONE request,
+//      so the model treats them as pages of a single exercise, not separate docs.
+//   2-4. OCR + Layout + Semantic Parsing - the model reads the text, classifies
+//      blocks (title/instruction/passage/question/options/header/footer/page
+//      number - the last three are discarded), and builds title -> instruction
+//      -> passage paragraphs -> question list (stem + options) in one pass.
+//   5. Question Type Classification - MCQ / Short Answer / Gap Fill / True-
+//      False(-Not Given) / Matching / Ordering / Summary Completion, following
+//      the same rules spelled out in the prompt below.
+//   6. Metadata - exercise title, stated reading level (if any), instruction.
+//   7. Passage split into paragraphs (kept separate from the flat blocks so
+//      word-highlighting downstream still works exactly like every other
+//      Content Source).
+//   8. Output mapped onto the SAME shapes the rest of Create Mode already
+//      uses - Block[] for the Editor, ReadingQuestion[] for the Question
+//      Builder - plus an "Educational Analysis" tagging layer (skill,
+//      difficulty) added on top of (not instead of) the structural parse, so
+//      structure parsing and pedagogical tagging stay decoupled per-question.
+// Also returns a self-reported "confidence" estimate (0-100, the model's own
+// read on how legible/complete the pages were) purely for the wizard's
+// Review Results summary - not a true OCR-engine confidence score.
+//
+// No response_format/json_schema is requested (unlike the Gemini routes in
+// this file) - OpenRouter's structured-outputs support isn't guaranteed across
+// whichever backend ends up serving a free-tier model request, and an
+// unsupported strict schema would hard-fail the call. Instead the exact JSON
+// shape is spelled out in the prompt itself and parsed defensively.
+// ---------------------------------------------------------------------------
+
+const BOOK_QUESTION_TYPES = [
+  "MULTIPLE_CHOICE", "TRUE_FALSE", "YES_NO_NOTGIVEN", "FILL_BLANK",
+  "SHORT_ANSWER", "ESSAY", "MATCHING", "ORDERING",
+] as const;
+
+const BOOK_IMPORT_SYSTEM_PROMPT = `You are a document-structure parser for English reading-exercise books and exam papers
+(IELTS/TOEFL/TOEIC/school textbook style). You are given one or more page photos/scans that
+together form ONE reading exercise - treat every image as a page of the SAME document, in the
+order given, never as separate unrelated exercises.
+
+Your job has two layers, and you must keep them conceptually separate even though you return them
+together:
+1. STRUCTURE PARSING - OCR the pages, detect layout blocks (title, subtitle, instruction, passage
+   paragraphs, question stems, answer options/choices, answer lines, matching columns, headers,
+   footers, page numbers), discard headers/footers/page numbers, and build a clean semantic tree:
+   title -> instruction -> passage paragraphs -> ordered question list (stem + options).
+2. EDUCATIONAL ANALYSIS - a separate tagging pass on top of the structure: for every question,
+   tag which reading/language skill it tests and how difficult it is. This tagging must never
+   change how a question was structurally parsed.
+
+Always reply with ONLY a single valid JSON object matching the exact shape described in the user
+message - no markdown code fences, no commentary, no text before or after the JSON.`;
+
+const BOOK_IMPORT_JSON_SHAPE = `Reply with ONLY a single JSON object with exactly this shape (no markdown fences, no extra text):
+{
+  "title": string,
+  "level": string | null,
+  "instruction": string | null,
+  "confidence": number (0-100),
+  "article": { "paragraphs": string[] },
+  "questions": [
+    {
+      "number": number,
+      "type": one of ${JSON.stringify(BOOK_QUESTION_TYPES)},
+      "skill": string,
+      "difficulty": one of ["A1","A2","B1","B2","C1","C2"],
+      "prompt": string,
+      "options": string[],
+      "answer": string,
+      "pairs": [{ "left": string, "right": string }] (MATCHING only, omit otherwise),
+      "items": string[] (ORDERING only, omit otherwise)
+    }
+  ]
+}`;
+
+const BOOK_IMPORT_USER_PROMPT = `Parse the attached page image(s) as a single reading exercise.
+
+1. Merge all pages into one logical document.
+2. Extract metadata: the exercise title (if present), the reading/grade level if explicitly
+   stated on the page (e.g. "Reading Comprehension Level 3" -> "Level 3"), and the instruction
+   line(s) telling the reader what to do (e.g. "Read the following passage."). Use null for any
+   of these that genuinely aren't present - never invent text that isn't on the page.
+3. Extract the passage/article text, split into paragraphs exactly as they appear (preserve
+   paragraph breaks; merge line-wraps within one paragraph into a single continuous string).
+4. Extract every question in order, numbered as printed. For each, decide its type with these
+   rules:
+   - Numbered stem followed by lettered/numbered choices (a/b/c/d or A/B/C/D) with one correct
+     answer -> MULTIPLE_CHOICE.
+   - Stem followed by a blank writing line, no choices given -> SHORT_ANSWER.
+   - A sentence with a gap ("____") to fill in with a missing word/phrase -> FILL_BLANK.
+   - Choices are exactly True/False -> TRUE_FALSE. Choices are True/False/Not Given or
+     Yes/No/Not Given -> YES_NO_NOTGIVEN.
+   - Two columns of items to be matched to each other -> MATCHING (return the correct pairs as
+     {left, right}).
+   - Items/events to be placed in the correct order/sequence -> ORDERING (return "items" already
+     in the correct order).
+   - "Complete the summary" with several blanks referencing the passage -> return one FILL_BLANK
+     question per blank, in reading order.
+   - A free-response/opinion prompt with no single correct answer -> ESSAY.
+5. Educational Analysis - for every question, in addition to (not instead of) the structural
+   fields above, add:
+   - skill: the specific reading/language skill being tested, e.g. "Main Idea", "Detail",
+     "Inference", "Vocabulary in Context", "Tone", "Reading Comprehension", "Grammar".
+   - difficulty: your best estimate of the CEFR level (A1, A2, B1, B2, C1, or C2) for that
+     question/passage, based on its vocabulary and structure. Always provide your best estimate -
+     do not return null for this field even if no level is printed on the page.
+6. Also return "confidence": your own 0-100 estimate of how legible and complete the source
+   images were (100 = perfectly clear, nothing ambiguous; lower if blurry/cut off/hard to read).
+7. Only use information that is actually visible in the images - if the images are blurry or a
+   field truly isn't present, use null for that field (except "skill"/"difficulty"/"confidence",
+   which always need your best-effort estimate) rather than guessing content that isn't there.
+
+${BOOK_IMPORT_JSON_SHAPE}`;
+
+router.post("/import/book", uploadImages.array("images", 12), async (req, res) => {
+  try {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (!files.length) return res.status(400).json({ error: "กรุณาอัปโหลดภาพอย่างน้อย 1 หน้า" });
+
+    const openRouterKey = process.env.OPENROUTER_API_KEY;
+    if (!openRouterKey) {
+      return res.status(400).json({
+        error:
+          "ฟีเจอร์นี้ต้องใช้ OpenRouter API (ยังไม่ได้ตั้งค่า OPENROUTER_API_KEY บนเซิร์ฟเวอร์) " +
+          "ขอคีย์ฟรีได้ที่ openrouter.ai/keys แล้ววางใน apps/server/.env จากนั้นรีสตาร์ทเซิร์ฟเวอร์และลองใหม่อีกครั้ง",
+      });
+    }
+
+    const raw = await withOpenRouterRetry(() =>
+      callOpenRouterVision({
+        systemPrompt: BOOK_IMPORT_SYSTEM_PROMPT,
+        userText: BOOK_IMPORT_USER_PROMPT,
+        images: files.map((f) => ({ mimeType: f.mimetype || "image/jpeg", base64: f.buffer.toString("base64") })),
+        apiKey: openRouterKey,
+      })
+    );
+
+    let parsed: any;
+    try {
+      parsed = extractJsonObject(raw);
+    } catch (parseErr: any) {
+      console.error("Book import (OCR): model response was not valid JSON.");
+      console.error("Raw response:", parseErr?.rawResponse ?? raw);
+      return res.status(502).json({
+        error:
+          "AI ตอบกลับไม่ใช่ JSON ที่ถูกต้อง กรุณาลองใหม่อีกครั้ง (โมเดลฟรีบางตัวตอบไม่ตรงรูปแบบเป็นครั้งคราว - ลองใหม่มักจะได้โมเดลอื่น)",
+      });
+    }
+
+    const paragraphs: string[] = Array.isArray(parsed?.article?.paragraphs)
+      ? parsed.article.paragraphs.map((p: any) => String(p).trim()).filter(Boolean)
+      : [];
+    if (!paragraphs.length) {
+      return res.status(400).json({ error: "ไม่พบเนื้อหาบทความในภาพที่อัปโหลด ลองใหม่อีกครั้งด้วยภาพที่ชัดเจนกว่านี้" });
+    }
+
+    const blocks: Block[] = paragraphs.map((p) => ({ id: randomBlockId(), type: "PARAGRAPH" as const, text: p }));
+
+    const questions = (Array.isArray(parsed?.questions) ? parsed.questions : [])
+      .filter((q: any) => q?.prompt?.trim() && q?.type)
+      .map((q: any) => {
+        const type = (BOOK_QUESTION_TYPES as readonly string[]).includes(q.type) ? q.type : "MULTIPLE_CHOICE";
+        const question: any = {
+          type,
+          skill: q.skill ? String(q.skill).trim() : "Reading Comprehension",
+          difficulty: q.difficulty ? String(q.difficulty).trim() : undefined,
+          prompt: String(q.prompt).trim(),
+          options: Array.isArray(q.options) ? q.options.map(String) : [],
+          answer: String(q.answer ?? "").trim(),
+        };
+        if (type === "MATCHING" && Array.isArray(q.pairs)) {
+          question.pairs = q.pairs.map((p: any) => ({ left: String(p?.left ?? "").trim(), right: String(p?.right ?? "").trim() }));
+        }
+        if (type === "ORDERING" && Array.isArray(q.items)) {
+          question.items = q.items.map((it: any) => String(it).trim());
+        }
+        return question;
+      });
+
+    res.json({
+      title: (String(parsed?.title ?? "").trim() || deriveTitleFromParagraphs(paragraphs)),
+      level: parsed?.level ? String(parsed.level).trim() : null,
+      instruction: parsed?.instruction ? String(parsed.instruction).trim() : null,
+      confidence: Number.isFinite(parsed?.confidence) ? Math.min(100, Math.max(0, Math.round(parsed.confidence))) : null,
+      pagesProcessed: files.length,
+      blocks,
+      content: blocksToPlainText(blocks),
+      questions,
+    });
+  } catch (err: any) {
+    console.error("Book import (OCR) failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+    res.status(500).json({ error: friendlyOpenRouterError(err, "นำเข้าภาพหนังสือ/ข้อสอบด้วย AI") });
   }
 });
 
@@ -693,6 +1087,26 @@ router.post("/passages/:id/notes", async (req, res) => {
     res.status(201).json(note);
   } catch (err: any) {
     console.error("Create note failed:", err?.message ?? err);
+    res.status(err?.name === "ZodError" ? 400 : 500).json({ error: err?.message ?? "Internal server error" });
+  }
+});
+
+const noteUpdateInput = z.object({
+  text: z.string().min(1),
+});
+
+// Used by the floating Note tool's autosave - the same note row is updated in
+// place as the user types/draws instead of creating a new row on every change.
+router.patch("/notes/:id", async (req, res) => {
+  try {
+    const user = getDbUser(req);
+    const existing = await prisma.note.findFirst({ where: { id: req.params.id, userId: user.id } });
+    if (!existing) return res.status(404).json({ error: "Note not found" });
+    const data = noteUpdateInput.parse(req.body);
+    const updated = await prisma.note.update({ where: { id: existing.id }, data });
+    res.json(updated);
+  } catch (err: any) {
+    console.error("Update note failed:", err?.message ?? err);
     res.status(err?.name === "ZodError" ? 400 : 500).json({ error: err?.message ?? "Internal server error" });
   }
 });

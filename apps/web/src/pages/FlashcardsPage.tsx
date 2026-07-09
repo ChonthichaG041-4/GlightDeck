@@ -1,21 +1,34 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Volume2, PartyPopper } from "lucide-react";
+import { Volume2, PartyPopper, Star, X, CircleHelp, Check, RotateCw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { useFlashcardQueue, useSubmitReview, useLeeches } from "@/api/hooks";
+import { useFlashcardQueue, useSubmitReview, useLeeches, useToggleFavorite } from "@/api/hooks";
 import { CollectionPicker } from "@/components/layout/CollectionPicker";
 import { speak } from "@/lib/tts";
 import { cn } from "@/lib/utils";
-import type { Rating } from "@/types";
+import type { Rating, Word } from "@/types";
 
-const ratingButtons: { rating: Rating; label: string; className: string }[] = [
-  { rating: "AGAIN", label: "Again", className: "bg-red-500 hover:bg-red-600 text-white" },
-  { rating: "HARD", label: "Hard", className: "bg-amber-500 hover:bg-amber-600 text-white" },
-  { rating: "GOOD", label: "Good", className: "bg-emerald-500 hover:bg-emerald-600 text-white" },
-  { rating: "EASY", label: "Easy", className: "bg-sky-500 hover:bg-sky-600 text-white" },
+// Anki-style 3-grade SRS buttons (Good is intentionally dropped from this UI -
+// see srs.ts on the server, which still fully supports it):
+//   Again = can't remember at all -> brought back again soon (this same session).
+//   Hard  = hard to remember -> shorter next interval than usual.
+//   Easy  = easy to remember -> done with this word for this session.
+const ratingButtons: {
+  rating: Rating;
+  label: string;
+  icon: typeof X;
+  className: string;
+}[] = [
+  { rating: "AGAIN", label: "Again", icon: X, className: "bg-red-100 text-red-600 hover:bg-red-200" },
+  { rating: "HARD", label: "Hard", icon: CircleHelp, className: "bg-amber-100 text-amber-600 hover:bg-amber-200" },
+  { rating: "EASY", label: "Easy", icon: Check, className: "bg-emerald-100 text-emerald-600 hover:bg-emerald-200" },
 ];
+
+const POS_ABBR: Record<string, string> = {
+  NOUN: "n.", VERB: "v.", ADJECTIVE: "adj.", ADVERB: "adv.", IDIOM: "idiom",
+  SLANG: "slang", PHRASE: "phrase", PREPOSITION: "prep.", CONJUNCTION: "conj.", PRONOUN: "pron.", OTHER: "",
+};
 
 export default function FlashcardsPage() {
   const [params, setParams] = useSearchParams();
@@ -24,13 +37,37 @@ export default function FlashcardsPage() {
   const { data, isLoading, refetch } = useFlashcardQueue(20, collectionId, wordIds);
   const { data: leeches } = useLeeches();
   const submitReview = useSubmitReview();
-  const [index, setIndex] = useState(0);
+  const toggleFavorite = useToggleFavorite();
+
+  // The local session queue is a mutable copy of the fetched batch - "Again"
+  // reinserts the card a few spots ahead instead of just moving on, so it
+  // resurfaces again soon in this same session (not just "due" tomorrow).
+  const [queue, setQueue] = useState<Word[] | null>(null);
+  const [totalInSession, setTotalInSession] = useState(0);
+  const [completedCount, setCompletedCount] = useState(0);
+  const [isRefilling, setIsRefilling] = useState(false);
   const [flipped, setFlipped] = useState(false);
+
+  // Starting a new session (switching collection / word set) resets everything.
+  useEffect(() => {
+    setQueue(null);
+    setCompletedCount(0);
+    setFlipped(false);
+  }, [collectionId, wordIds]);
+
+  // Populate the local queue once per session - later background refetches
+  // (e.g. submitReview invalidating ["flashcards"]) must NOT reset progress
+  // on an in-progress session.
+  useEffect(() => {
+    if (queue === null && data) {
+      setQueue(data.cards);
+      setTotalInSession(data.cards.length);
+    }
+  }, [data, queue]);
 
   function changeCollection(v: string) {
     setCollectionId(v);
     setWordIds(undefined);
-    setIndex(0);
     setParams((p) => {
       if (v === "ALL") p.delete("collectionId"); else p.set("collectionId", v);
       p.delete("wordIds");
@@ -38,37 +75,75 @@ export default function FlashcardsPage() {
     });
   }
 
-  const cards = data?.cards ?? [];
-  const card = cards[index];
-  const total = cards.length;
+  const card = queue?.[0];
 
   function grade(rating: Rating) {
-    if (!card) return;
+    if (!card || !queue) return;
+    const gradedCard = card;
+    const rest = queue.slice(1);
+    setFlipped(false);
+
+    // Advance the card on screen immediately - don't make the learner wait on
+    // a network round trip just to see the next word. The review still gets
+    // logged, just in the background.
+    if (rating === "AGAIN") {
+      const insertAt = Math.min(3, rest.length);
+      setQueue([...rest.slice(0, insertAt), gradedCard, ...rest.slice(insertAt)]);
+      submitReview.mutate({ wordId: gradedCard.id, rating });
+      return;
+    }
+
+    setCompletedCount((c) => c + 1);
+    setQueue(rest);
+
+    if (rest.length > 0) {
+      submitReview.mutate({ wordId: gradedCard.id, rating });
+      return;
+    }
+
+    // Ran out of cards in this batch - this one edge case does need to wait
+    // for the server to record the review before asking it for more due
+    // cards (otherwise the just-graded word could come right back).
+    setIsRefilling(true);
     submitReview.mutate(
-      { wordId: card.id, rating },
+      { wordId: gradedCard.id, rating },
       {
         onSuccess: () => {
-          setFlipped(false);
-          if (index + 1 < total) setIndex(index + 1);
-          else refetch().then(() => setIndex(0));
+          refetch().then((r) => {
+            const freshCards = r.data?.cards ?? [];
+            setTotalInSession(freshCards.length);
+            setCompletedCount(0);
+            setQueue(freshCards);
+            setIsRefilling(false);
+          });
         },
+        onError: () => setIsRefilling(false),
       }
     );
   }
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading flashcards...</p>;
+  if (isLoading || queue === null) return <p className="text-sm text-muted-foreground">Loading flashcards...</p>;
 
-  if (!card) {
+  if (!card || isRefilling) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-16 text-center">
         <CollectionPicker value={collectionId} onChange={changeCollection} className="w-full" />
         {wordIds && <p className="text-xs text-muted-foreground">กำลังฝึกจากคำที่เลือกไว้ ({wordIds.split(",").length} คำ)</p>}
-        <PartyPopper className="h-10 w-10 text-primary" />
-        <h2 className="text-xl font-semibold">All caught up!</h2>
-        <p className="text-sm text-muted-foreground">No cards due right now. Add more words or come back later.</p>
+        {isRefilling ? (
+          <p className="text-sm text-muted-foreground">Loading more cards...</p>
+        ) : (
+          <>
+            <PartyPopper className="h-10 w-10 text-primary" />
+            <h2 className="text-xl font-semibold">All caught up!</h2>
+            <p className="text-sm text-muted-foreground">No cards due right now. Add more words or come back later.</p>
+          </>
+        )}
       </div>
     );
   }
+
+  const percent = totalInSession > 0 ? Math.round((completedCount / totalInSession) * 100) : 0;
+  const posLabel = POS_ABBR[card.type] ?? "";
 
   return (
     <div className="mx-auto flex max-w-xl flex-col items-center gap-6">
@@ -83,56 +158,111 @@ export default function FlashcardsPage() {
           </div>
         </div>
       )}
-      <div className="w-full">
-        <div className="mb-2 flex justify-between text-sm text-muted-foreground">
-          <span>Reviewing</span>
-          <span>{index + 1} / {total}</span>
-        </div>
-        <Progress value={(index / total) * 100} />
+
+      <div className="flex w-full items-center gap-3">
+        <span className="shrink-0 text-sm font-semibold">
+          {completedCount} <span className="font-normal text-muted-foreground">/ {totalInSession}</span>
+        </span>
+        <Progress value={percent} className="h-2.5" />
+        <span className="shrink-0 text-sm font-medium text-muted-foreground">{percent}%</span>
       </div>
 
       <Card
-        className="flex h-80 w-full cursor-pointer items-center justify-center [perspective:1200px]"
+        className="relative flex w-full cursor-pointer items-center justify-center overflow-hidden rounded-2xl [perspective:1200px]"
         onClick={() => setFlipped((f) => !f)}
       >
-        <CardContent className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
-          {!flipped ? (
-            <>
-              <span className="text-6xl">{card.image}</span>
-              <h2 className="text-4xl font-extrabold tracking-wide">{card.headword.toUpperCase()}</h2>
-              <p className="text-sm text-muted-foreground">Tap the card to flip</p>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-2">
-                <h2 className="text-2xl font-bold">{card.headword}</h2>
-                <button onClick={(e) => { e.stopPropagation(); speak(card.headword); }}>
-                  <Volume2 className="h-5 w-5 text-muted-foreground hover:text-primary" />
+        <CardContent className="relative flex min-h-[22rem] w-full flex-col p-6">
+          <div className="flex items-start justify-between">
+            <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold tracking-wide text-primary">
+              {flipped ? "BACK" : "FRONT"}
+            </span>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); toggleFavorite.mutate(card.id); }}
+              aria-label="Toggle favorite"
+              className="text-muted-foreground transition-colors hover:text-amber-500"
+            >
+              <Star className={cn("h-5 w-5", card.favorite && "fill-amber-400 text-amber-400")} />
+            </button>
+          </div>
+
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+            {!flipped ? (
+              <>
+                <h2 className="text-4xl font-extrabold tracking-tight">{card.headword}</h2>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); speak(card.headword); }}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary transition-colors hover:bg-primary/20"
+                >
+                  <Volume2 className="h-5 w-5" />
                 </button>
-              </div>
-              <p className="text-lg">{card.meaning}</p>
-              <p className="text-sm text-muted-foreground">{card.ipa}</p>
-              {card.example && <p className="max-w-sm text-sm italic text-muted-foreground">"{card.example}"</p>}
-            </>
-          )}
+                <div className="h-px w-2/3 bg-border" />
+                <p className="text-lg font-medium">{card.meaning}</p>
+                {posLabel && <p className="text-sm italic text-muted-foreground">({posLabel})</p>}
+              </>
+            ) : (
+              <>
+                <h2 className="text-2xl font-bold">{card.headword}</h2>
+                {card.ipa && <p className="text-sm text-muted-foreground">{card.ipa}</p>}
+                {card.example && (
+                  <div className="max-w-sm space-y-1">
+                    <p className="text-sm italic">"{card.example}"</p>
+                    {card.exampleTranslate && <p className="text-xs text-muted-foreground">{card.exampleTranslate}</p>}
+                  </div>
+                )}
+                {(card.synonym || card.opposite) && (
+                  <div className="flex flex-wrap justify-center gap-4 text-xs text-muted-foreground">
+                    {card.synonym && <span>Synonym: <span className="font-medium text-foreground">{card.synonym}</span></span>}
+                    {card.opposite && <span>Opposite: <span className="font-medium text-foreground">{card.opposite}</span></span>}
+                  </div>
+                )}
+                {!card.example && !card.synonym && !card.opposite && !card.ipa && (
+                  <p className="text-sm text-muted-foreground">No extra details for this word.</p>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Decorative flourish, purely cosmetic. */}
+          <svg
+            viewBox="0 0 120 120"
+            className="pointer-events-none absolute bottom-2 right-2 h-20 w-20 text-primary/20"
+            fill="none"
+          >
+            <circle cx="80" cy="70" r="22" fill="currentColor" opacity="0.5" />
+            <ellipse cx="80" cy="70" rx="34" ry="8" stroke="currentColor" strokeWidth="2" opacity="0.6" />
+            <path d="M20 30 l3 7 7 3 -7 3 -3 7 -3 -7 -7 -3 7 -3 z" fill="currentColor" opacity="0.5" />
+            <circle cx="30" cy="90" r="3" fill="currentColor" opacity="0.5" />
+            <circle cx="45" cy="20" r="2" fill="currentColor" opacity="0.4" />
+          </svg>
         </CardContent>
       </Card>
 
-      {flipped ? (
-        <div className="grid w-full grid-cols-4 gap-2">
-          {ratingButtons.map((b) => (
-            <button
-              key={b.rating}
-              className={cn("rounded-lg py-3 text-sm font-semibold transition-transform active:scale-95", b.className)}
-              onClick={() => grade(b.rating)}
-            >
-              {b.label}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <Button size="lg" onClick={() => setFlipped(true)}>Flip</Button>
-      )}
+      <button
+        type="button"
+        onClick={() => setFlipped((f) => !f)}
+        className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <RotateCw className="h-3.5 w-3.5" /> Tap card to flip
+      </button>
+
+      <div className="grid w-full grid-cols-3 gap-3">
+        {ratingButtons.map((b) => (
+          <button
+            key={b.rating}
+            disabled={submitReview.isPending}
+            className={cn(
+              "flex flex-col items-center gap-1.5 rounded-xl py-4 text-sm font-semibold transition-transform active:scale-95 disabled:pointer-events-none disabled:opacity-60",
+              b.className
+            )}
+            onClick={() => grade(b.rating)}
+          >
+            <b.icon className="h-5 w-5" />
+            {b.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

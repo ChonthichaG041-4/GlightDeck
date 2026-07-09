@@ -1,10 +1,9 @@
-import { useState, type ReactNode, type ComponentType } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState, type ComponentType } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   Plus, BookText, Wand2,
-  BookOpen, Gem, BarChart3, PenLine, ClipboardPaste, FileUp, FileType, Link2, Lock,
-  Ruler, Palette, GraduationCap, SpellCheck2, Target, ClipboardList,
-  Sparkles, Sprout, Book, MessageCircle, TrendingUp, Star, Crown, Shuffle, Check,
+  BookOpen, Gem, BarChart3, PenLine, ClipboardPaste, FileUp, FileType, Link2, Lock, Globe, Trash2, Pencil,
+  Ruler, Palette, GraduationCap, SpellCheck2, Target, ClipboardList, Headphones,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,23 +12,14 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
-import { useArticles, useCreateArticle, useGenerateReadingExercise, type ReadingExercise } from "@/api/hooks";
+import { useArticles, useCreateArticle, useDeleteArticle, useGenerateReadingExercise, type ReadingExercise } from "@/api/hooks";
 import ReadingWorkspace from "@/components/reading/ReadingWorkspace";
 import CreateModeTab from "@/components/reading/CreateModeTab";
 import CommunityTab from "@/components/reading/CommunityTab";
+import { FieldLabel, OptionCard, PillButton } from "@/components/reading/primitives";
+import { DIFFICULTY_CARDS, DIFFICULTY_LABELS, TEST_MODES, QUESTION_TYPES, QUESTION_COUNTS } from "@/components/reading/composerConstants";
 import { cn } from "@/lib/utils";
-
-const DIFFICULTY_CARDS: { value: string; icon: ComponentType<{ className?: string }>; title: string; description: string }[] = [
-  { value: "AUTO", icon: Sparkles, title: "Auto", description: "AI selects the appropriate level" },
-  { value: "A1", icon: Sprout, title: "Beginner (A1)", description: "Basic vocabulary and simple sentences" },
-  { value: "A2", icon: Book, title: "Elementary (A2)", description: "Everyday topics and simple conversations" },
-  { value: "B1", icon: MessageCircle, title: "Intermediate (B1)", description: "Familiar topics and connected ideas" },
-  { value: "B2", icon: TrendingUp, title: "Upper Intermediate (B2)", description: "Complex ideas and detailed information" },
-  { value: "C1", icon: Star, title: "Advanced (C1)", description: "Abstract topics and advanced language" },
-  { value: "C2", icon: Crown, title: "Proficiency (C2)", description: "Sophisticated content and nuanced meaning" },
-  { value: "MIXED", icon: Shuffle, title: "Mixed", description: "Mixed levels for varied practice" },
-];
-const DIFFICULTY_LABELS: Record<string, string> = Object.fromEntries(DIFFICULTY_CARDS.map((d) => [d.value, d.title]));
+import type { Article } from "@/types";
 
 const EXAM_MODES = [
   { value: "GENERAL_ENGLISH", label: "General English" },
@@ -107,34 +97,31 @@ const READING_SKILLS = [
   { value: "MIXED", label: "Mixed" },
 ];
 
-const TEST_MODES = [
-  { value: "READING_ONLY", label: "Reading Only" },
-  { value: "TRANSLATION", label: "Reading + Translation" },
-  { value: "QUESTIONS", label: "Reading + Questions" },
-  { value: "VOCABULARY", label: "Reading + Vocabulary" },
-  { value: "GRAMMAR", label: "Reading + Grammar" },
-  { value: "MIXED", label: "Mixed" },
-];
-
-const QUESTION_TYPES = [
-  { value: "MULTIPLE_CHOICE", label: "Multiple Choice" },
-  { value: "TRUE_FALSE", label: "True / False" },
-  { value: "YES_NO_NOTGIVEN", label: "Yes / No / Not Given" },
-  { value: "FILL_BLANK", label: "Fill in the Blank" },
-  { value: "SHORT_ANSWER", label: "Short Answer" },
-  { value: "MATCHING", label: "Matching" },
-  { value: "ORDERING", label: "Ordering" },
-  { value: "ESSAY", label: "Essay" },
-  { value: "HIGHLIGHT_SENTENCE", label: "Highlight Sentence" },
-  { value: "CLICK_WORD", label: "Click Word" },
-  { value: "MIXED", label: "Mixed" },
-];
-const QUESTION_COUNTS = [5, 10, 15, 20];
-
 type ReadingTab = "generate" | "create" | "community" | "library";
 
+const VALID_TABS: ReadingTab[] = ["generate", "create", "community", "library"];
+
 export default function ReadingPage() {
-  const [tab, setTab] = useState<ReadingTab>("generate");
+  const { id: editArticleId } = useParams<{ id?: string }>();
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab") as ReadingTab | null;
+  const [tab, setTab] = useState<ReadingTab>(
+    editArticleId ? "create" : tabParam && VALID_TABS.includes(tabParam) ? tabParam : "generate"
+  );
+
+  // Navigating directly between two /reading/:id/edit URLs keeps this page
+  // mounted (only the param changes), so make sure the Create tab stays
+  // selected any time an edit id is present, not just on first mount.
+  useEffect(() => {
+    if (editArticleId) setTab("create");
+  }, [editArticleId]);
+
+  // A save-and-return-to-My-Articles redirect (from editing an article) lands
+  // on /reading?tab=library - pick that up even if this page instance happens
+  // to stay mounted (e.g. future navigation changes) rather than only on init.
+  useEffect(() => {
+    if (!editArticleId && tabParam && VALID_TABS.includes(tabParam)) setTab(tabParam);
+  }, [tabParam, editArticleId]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
@@ -153,7 +140,7 @@ export default function ReadingPage() {
       </Tabs>
 
       {tab === "generate" && <ReadingGenerator />}
-      {tab === "create" && <CreateModeTab />}
+      {tab === "create" && <CreateModeTab editArticleId={editArticleId} />}
       {tab === "community" && <CommunityTab />}
       {tab === "library" && <ArticleLibrary />}
     </div>
@@ -181,19 +168,7 @@ function ArticleLibrary() {
           <h2 className="mb-2 text-sm font-semibold text-muted-foreground">{category}</h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {articles?.filter((a) => a.category === category).map((a) => (
-              <Link key={a.id} to={`/reading/${a.id}`}>
-                <Card className="transition-shadow hover:shadow-md">
-                  <CardContent className="flex items-center gap-3 p-4">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-                      <BookText className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <p className="font-medium">{a.title}</p>
-                      <p className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleDateString()}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              </Link>
+              <ArticleCard key={a.id} article={a} />
             ))}
           </div>
         </div>
@@ -203,6 +178,96 @@ function ArticleLibrary() {
         <p className="py-10 text-center text-sm text-muted-foreground">No articles yet - add your first one.</p>
       )}
     </div>
+  );
+}
+
+const VISIBILITY_CONFIG: Record<string, { label: string; icon: ComponentType<{ className?: string }>; className: string }> = {
+  PRIVATE: { label: "Private", icon: Lock, className: "bg-muted text-muted-foreground" },
+  UNLISTED: { label: "Unlisted", icon: Link2, className: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300" },
+  PUBLIC: { label: "Public", icon: Globe, className: "bg-primary/10 text-primary" },
+};
+
+function ArticleCard({ article }: { article: Article }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const deleteArticle = useDeleteArticle();
+
+  const vis = VISIBILITY_CONFIG[article.visibility ?? "PRIVATE"] ?? VISIBILITY_CONFIG.PRIVATE;
+  const VisIcon = vis.icon;
+
+  return (
+    <>
+      <Card className="group relative transition-shadow hover:shadow-md">
+        <Link to={`/reading/${article.id}`} className="block">
+          <CardContent className="flex items-center gap-3 p-4 pr-11">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+              <BookText className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium">{article.title}</p>
+              <div className="mt-1 flex items-center gap-2">
+                <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium", vis.className)}>
+                  <VisIcon className="h-3 w-3" /> {vis.label}
+                </span>
+                <span className="text-xs text-muted-foreground">{new Date(article.createdAt).toLocaleDateString()}</span>
+              </div>
+            </div>
+          </CardContent>
+        </Link>
+        <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <Link
+            to={`/listening/${article.id}`}
+            aria-label="Test Listening"
+            title="Test Listening"
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Headphones className="h-4 w-4" />
+          </Link>
+          <Link
+            to={`/reading/${article.id}/edit`}
+            aria-label="Edit article"
+            title="Edit"
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Pencil className="h-4 w-4" />
+          </Link>
+          <button
+            type="button"
+            aria-label="Delete article"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setConfirmOpen(true);
+            }}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </Card>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete "{article.title}"?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes the article along with its questions, highlights, notes, and stats. This can't be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteArticle.isPending}
+              onClick={() => deleteArticle.mutate(article.id, { onSuccess: () => setConfirmOpen(false) })}
+            >
+              {deleteArticle.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -253,6 +318,9 @@ function ReadingGenerator() {
   const [topic, setTopic] = useState("");
   const [passageSource, setPassageSource] = useState("AI_GENERATE");
   const [manualText, setManualText] = useState("");
+  const [description, setDescription] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagDraft, setTagDraft] = useState("");
   const [examMode, setExamMode] = useState("GENERAL_ENGLISH");
   const [cefrLevel, setCefrLevel] = useState("AUTO");
   const [length, setLength] = useState("MEDIUM");
@@ -300,6 +368,8 @@ function ReadingGenerator() {
         topic: topic.trim(),
         passageSource,
         manualText: manualText.trim(),
+        description: description.trim(),
+        tags,
         cefrLevel,
         examMode,
         length,
@@ -418,6 +488,42 @@ function ReadingGenerator() {
                 />
               </div>
             )}
+
+            <div>
+              <FieldLabel text="Description (optional)" />
+              <textarea
+                className="h-16 w-full rounded-md border p-2 text-sm"
+                placeholder="สรุปสั้น ๆ ว่าบทความนี้เกี่ยวกับอะไร..."
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <FieldLabel text="Tags (optional)" />
+              <div className="flex flex-wrap items-center gap-1.5 rounded-md border p-1.5">
+                {tags.map((t) => (
+                  <span key={t} className="flex items-center gap-1 rounded-full bg-accent px-2 py-0.5 text-xs font-medium">
+                    {t}
+                    <button type="button" onClick={() => setTags(tags.filter((x) => x !== t))} className="text-muted-foreground hover:text-destructive">×</button>
+                  </span>
+                ))}
+                <input
+                  className="min-w-[80px] flex-1 border-0 bg-transparent text-xs outline-none"
+                  value={tagDraft}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === ",") {
+                      e.preventDefault();
+                      const t = tagDraft.trim();
+                      if (t && !tags.includes(t)) setTags([...tags, t]);
+                      setTagDraft("");
+                    }
+                  }}
+                  placeholder={tags.length ? "" : "พิมพ์แล้วกด Enter..."}
+                />
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -580,65 +686,4 @@ function ReadingGenerator() {
   );
 }
 
-// ============================================================================
-// Shared small UI primitives (mirrors the same pattern used on ListeningPage)
-// ============================================================================
-
-function FieldLabel({ icon, text }: { icon?: ReactNode; text: string }) {
-  return (
-    <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold">
-      {icon}
-      {text}
-    </div>
-  );
-}
-
-function OptionCard({
-  active, onClick, icon, title, description, disabled, badge,
-}: { active: boolean; onClick: () => void; icon?: ReactNode; title: string; description: string; disabled?: boolean; badge?: ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "relative flex flex-col items-start gap-1.5 rounded-xl border p-3 text-left transition-colors",
-        disabled ? "cursor-not-allowed opacity-50" : active ? "border-primary bg-primary/5" : "hover:bg-accent"
-      )}
-    >
-      {badge && <span className="absolute right-2 top-2 text-muted-foreground">{badge}</span>}
-      {!disabled && (
-        <span
-          className={cn(
-            "flex h-4 w-4 items-center justify-center rounded-full border",
-            active ? "border-primary bg-primary" : "border-muted-foreground/40"
-          )}
-        >
-          {active && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
-        </span>
-      )}
-      {icon && <span className={cn(active ? "text-primary" : "text-muted-foreground")}>{icon}</span>}
-      <p className="text-sm font-semibold">{title}</p>
-      <p className="text-xs text-muted-foreground">{description}</p>
-    </button>
-  );
-}
-
-function PillButton({
-  active, onClick, children, showCheck,
-}: { active: boolean; onClick: () => void; children: ReactNode; showCheck?: boolean }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-        active ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent"
-      )}
-    >
-      {children}
-      {active && showCheck && <Check className="h-3 w-3" />}
-    </button>
-  );
-}
 

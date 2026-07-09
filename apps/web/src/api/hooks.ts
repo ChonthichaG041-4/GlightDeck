@@ -278,6 +278,17 @@ export function useCreateArticle() {
   });
 }
 
+export function useDeleteArticle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/reading/articles/${id}`);
+      return { id };
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["articles"] }),
+  });
+}
+
 export function useMarkArticleRead() {
   const qc = useQueryClient();
   return useMutation({
@@ -287,12 +298,23 @@ export function useMarkArticleRead() {
 }
 
 // ---------- AI reading-exercise generator (custom Reading practice builder) ----------
+export type ReadingQuestionType =
+  | "MULTIPLE_CHOICE" | "TRUE_FALSE" | "YES_NO_NOTGIVEN" | "FILL_BLANK" | "SHORT_ANSWER"
+  | "ESSAY" | "MATCHING" | "ORDERING";
+
 export interface ReadingQuestion {
-  type: "MULTIPLE_CHOICE" | "TRUE_FALSE" | "YES_NO_NOTGIVEN" | "FILL_BLANK" | "SHORT_ANSWER";
+  type: ReadingQuestionType;
   skill: string;
   prompt: string;
   options: string[];
   answer: string;
+  // MATCHING/ORDERING don't fit the flat options/answer shape above - authored
+  // manually via the Create Mode Question Builder (not AI-generated).
+  pairs?: { left: string; right: string }[]; // MATCHING
+  items?: string[]; // ORDERING - listed here in the correct order
+  // Educational Analysis tag (Import Book/Reading only, for now) - a CEFR
+  // difficulty estimate kept separate from the structural fields above.
+  difficulty?: string;
 }
 
 export interface ReadingExercise {
@@ -308,6 +330,8 @@ export function useGenerateReadingExercise() {
       topic: string;
       passageSource: string;
       manualText: string;
+      description?: string;
+      tags?: string[];
       cefrLevel: string;
       examMode: string;
       length: string;
@@ -375,11 +399,39 @@ export interface BookmarkItem {
   createdAt: string;
 }
 
+// Rich block-editor content type (Heading/Paragraph/Image/Quote/Table/Code/Divider) -
+// mirrors apps/server/src/lib/blocks.ts. Article.content stays the flattened
+// plain-text mirror so the rest of the app (Reading Workspace, word lookups,
+// highlight offsets) never needs to know blocks exist.
+export type Block =
+  | { id: string; type: "HEADING"; level: 1 | 2 | 3; text: string }
+  | { id: string; type: "PARAGRAPH"; text: string }
+  | { id: string; type: "IMAGE"; url: string; caption?: string }
+  | { id: string; type: "QUOTE"; text: string }
+  | { id: string; type: "TABLE"; rows: string[][] }
+  | { id: string; type: "CODE"; code: string; language?: string }
+  | { id: string; type: "DIVIDER" };
+
+export type ContentSource =
+  | "AI_GENERATE" | "WRITE_MANUALLY" | "PASTE_TEXT" | "IMPORT_DOCX" | "IMPORT_PDF" | "IMPORT_MARKDOWN" | "IMPORT_BOOK";
+
+export interface VocabularyItem {
+  headword: string;
+  meaning: string;
+  ipa?: string | null;
+}
+
 export interface PassageDetail {
   id: string;
   title: string;
   category: string;
   content: string;
+  description?: string | null;
+  tags?: string[];
+  contentSource?: string | null;
+  blocks?: Block[] | null;
+  vocabularyMode?: string | null;
+  vocabulary?: VocabularyItem[] | null;
   translation?: string | null;
   questions: ReadingQuestion[] | null;
   examMode?: string | null;
@@ -405,10 +457,28 @@ export function usePassage(id: string | undefined) {
   });
 }
 
+export interface UpdatePassagePayload {
+  id: string;
+  title?: string;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  content?: string;
+  translation?: string;
+  blocks?: Block[];
+  contentSource?: ContentSource;
+  cefrLevel?: string;
+  testMode?: string;
+  vocabularyMode?: "AUTO" | "MANUAL" | "NONE";
+  vocabulary?: VocabularyItem[];
+  questions?: ReadingQuestion[];
+  visibility?: string;
+}
+
 export function useUpdatePassage() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...payload }: { id: string; title?: string; content?: string; questions?: any[]; visibility?: string }) =>
+    mutationFn: async ({ id, ...payload }: UpdatePassagePayload) =>
       (await api.patch<{ id: string; visibility: string }>(`/reading/passages/${id}`, payload)).data,
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["passage", vars.id] });
@@ -417,9 +487,25 @@ export function useUpdatePassage() {
   });
 }
 
+export interface CreatePassagePayload {
+  title: string;
+  content: string;
+  description?: string;
+  translation?: string;
+  category?: string;
+  tags?: string[];
+  blocks?: Block[];
+  contentSource?: ContentSource;
+  cefrLevel?: string;
+  testMode?: string;
+  vocabularyMode?: "AUTO" | "MANUAL" | "NONE";
+  vocabulary?: VocabularyItem[];
+  questions?: ReadingQuestion[];
+}
+
 export function useCreatePassage() {
   return useMutation({
-    mutationFn: async (payload: { title: string; content: string; category?: string; questions?: any[] }) =>
+    mutationFn: async (payload: CreatePassagePayload) =>
       (await api.post<{ id: string }>("/reading/passages", payload)).data,
   });
 }
@@ -431,12 +517,36 @@ export function useCommunityPassages() {
   });
 }
 
+// Both highlight mutations below update the local ["passage", articleId] cache
+// synchronously in onMutate (optimistic update) so the mark appears/disappears
+// on screen instantly, instead of waiting a full network round trip. onSettled
+// still invalidates to reconcile with the server (e.g. real id, or roll back on
+// a genuine failure) - that refetch happens quietly in the background.
 export function useCreateHighlight() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ articleId, ...payload }: { articleId: string; text: string; startOffset: number; endOffset: number; color?: string }) =>
       (await api.post<HighlightItem>(`/reading/passages/${articleId}/highlights`, payload)).data,
-    onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
+    onMutate: async ({ articleId, ...payload }) => {
+      await qc.cancelQueries({ queryKey: ["passage", articleId] });
+      const previous = qc.getQueryData<PassageDetail>(["passage", articleId]);
+      if (previous) {
+        const optimistic: HighlightItem = {
+          id: `optimistic-${Math.random().toString(36).slice(2)}`,
+          text: payload.text,
+          startOffset: payload.startOffset,
+          endOffset: payload.endOffset,
+          color: payload.color ?? "#fde68a",
+          createdAt: new Date().toISOString(),
+        };
+        qc.setQueryData<PassageDetail>(["passage", articleId], { ...previous, highlights: [...previous.highlights, optimistic] });
+      }
+      return { previous };
+    },
+    onError: (_err, vars, context) => {
+      if (context?.previous) qc.setQueryData(["passage", vars.articleId], context.previous);
+    },
+    onSettled: (_d, _err, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
   });
 }
 
@@ -444,10 +554,31 @@ export function useDeleteHighlight() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, articleId }: { id: string; articleId: string }) => {
-      await api.delete(`/reading/highlights/${id}`);
+      try {
+        await api.delete(`/reading/highlights/${id}`);
+      } catch (err: any) {
+        // Already gone (e.g. a duplicate click, or a stale cache after the
+        // article itself was deleted elsewhere) - the desired end state is
+        // already true, so don't surface this as a failure.
+        if (err?.response?.status !== 404) throw err;
+      }
       return { articleId };
     },
-    onSuccess: (data) => qc.invalidateQueries({ queryKey: ["passage", data.articleId] }),
+    onMutate: async ({ id, articleId }) => {
+      await qc.cancelQueries({ queryKey: ["passage", articleId] });
+      const previous = qc.getQueryData<PassageDetail>(["passage", articleId]);
+      if (previous) {
+        qc.setQueryData<PassageDetail>(["passage", articleId], {
+          ...previous,
+          highlights: previous.highlights.filter((h) => h.id !== id),
+        });
+      }
+      return { previous };
+    },
+    onError: (_err, vars, context) => {
+      if (context?.previous) qc.setQueryData(["passage", vars.articleId], context.previous);
+    },
+    onSettled: (_d, _err, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
   });
 }
 
@@ -456,6 +587,17 @@ export function useCreateNote() {
   return useMutation({
     mutationFn: async ({ articleId, ...payload }: { articleId: string; text: string; anchorText?: string; anchorOffset?: number }) =>
       (await api.post<NoteItem>(`/reading/passages/${articleId}/notes`, payload)).data,
+    onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
+  });
+}
+
+// Used by the floating Note tool's autosave - updates the same note row in
+// place (no "Save" button; called on a short debounce after each edit).
+export function useUpdateNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, articleId, text }: { id: string; articleId: string; text: string }) =>
+      (await api.patch<NoteItem>(`/reading/notes/${id}`, { text })).data,
     onSuccess: (_d, vars) => qc.invalidateQueries({ queryKey: ["passage", vars.articleId] }),
   });
 }
@@ -520,8 +662,91 @@ export function useExplainSentence() {
 
 export function useWritingAssist() {
   return useMutation({
-    mutationFn: async (payload: { paragraph: string; instruction: "CONTINUE" | "IMPROVE" | "FIX_GRAMMAR" | "SHORTEN" | "EXPAND" }) =>
+    mutationFn: async (payload: { paragraph: string; instruction: "CONTINUE" | "IMPROVE" | "FIX_GRAMMAR" | "SHORTEN" | "EXPAND" | "SIMPLIFY" }) =>
       (await api.post<{ source: string; text: string | null; note?: string }>("/ai/writing-assist", payload)).data,
+  });
+}
+
+// ---------- Unified Generate/Create composer: imports + whole-passage AI actions ----------
+
+export interface ImportedDocument {
+  title: string;
+  blocks: Block[];
+  content: string;
+}
+
+export function useImportDocx() {
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return (await api.post<ImportedDocument>("/reading/import/docx", form, { headers: { "Content-Type": "multipart/form-data" } })).data;
+    },
+  });
+}
+
+export function useImportPdf() {
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return (await api.post<ImportedDocument>("/reading/import/pdf", form, { headers: { "Content-Type": "multipart/form-data" } })).data;
+    },
+  });
+}
+
+export function useImportMarkdown() {
+  return useMutation({
+    mutationFn: async (text: string) => (await api.post<ImportedDocument>("/reading/import/markdown", { text })).data,
+  });
+}
+
+// Import Book/Reading (OCR): one or more page photos of a book/exam page,
+// merged server-side into one passage + question set via Gemini vision.
+// Backs the multi-step Import Wizard (see ImportBookWizard.tsx).
+export interface ImportedBookDocument extends ImportedDocument {
+  level?: string | null;
+  instruction?: string | null;
+  confidence?: number | null;
+  pagesProcessed: number;
+  questions: ReadingQuestion[];
+}
+
+export function useImportBook() {
+  return useMutation({
+    mutationFn: async (files: File[]) => {
+      const form = new FormData();
+      files.forEach((f) => form.append("images", f));
+      return (await api.post<ImportedBookDocument>("/reading/import/book", form, { headers: { "Content-Type": "multipart/form-data" } })).data;
+    },
+  });
+}
+
+export function useVocabularyDetect() {
+  return useMutation({
+    mutationFn: async (payload: { passage: string; targetLang?: string; max?: number }) =>
+      (await api.post<{ source: string; vocabulary: VocabularyItem[]; note?: string }>("/ai/vocabulary-detect", payload)).data,
+  });
+}
+
+export function useGenerateQuestionsForPassage() {
+  return useMutation({
+    mutationFn: async (payload: { passage: string; numQuestions?: number; targetLang?: string }) =>
+      (await api.post<{ source: string; questions: ReadingQuestion[]; note?: string }>("/ai/generate-questions-for-passage", payload)).data,
+  });
+}
+
+export function useGenerateSummary() {
+  return useMutation({
+    mutationFn: async (payload: { passage: string; targetLang?: string }) =>
+      (await api.post<{ source: string; summary: string | null; note?: string }>("/ai/generate-summary", payload)).data,
+  });
+}
+
+export function useGenerateTranslation() {
+  return useMutation({
+    mutationFn: async (payload: { passage: string; targetLang?: string }) =>
+      (await api.post<{ source: string; translation: string | null; note?: string }>("/ai/generate-translation", payload)).data,
   });
 }
 

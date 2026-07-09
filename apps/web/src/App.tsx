@@ -8,6 +8,7 @@ import HomePage from "@/pages/HomePage";
 import VocabularyPage from "@/pages/VocabularyPage";
 import FlashcardsPage from "@/pages/FlashcardsPage";
 import ListeningPage from "@/pages/ListeningPage";
+import ListeningReaderPage from "@/pages/ListeningReaderPage";
 import ReadingPage from "@/pages/ReadingPage";
 import ArticleReaderPage from "@/pages/ArticleReaderPage";
 import QuizPage from "@/pages/QuizPage";
@@ -46,7 +47,9 @@ export default function App() {
         <Route path="/vocabulary" element={<VocabularyPage />} />
         <Route path="/flashcards" element={<FlashcardsPage />} />
         <Route path="/listening" element={<ListeningPage />} />
+        <Route path="/listening/:id" element={<ListeningReaderPage />} />
         <Route path="/reading" element={<ReadingPage />} />
+        <Route path="/reading/:id/edit" element={<ReadingPage />} />
         <Route path="/reading/:id" element={<ArticleReaderPage />} />
         <Route path="/quiz" element={<QuizPage />} />
         <Route path="/statistics" element={<StatisticsPage />} />

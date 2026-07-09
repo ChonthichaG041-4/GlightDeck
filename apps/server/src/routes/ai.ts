@@ -779,7 +779,7 @@ Explain this sentence for a ${targetLangName}-speaking English learner. Reply wi
 
 const writingAssistInput = z.object({
   paragraph: z.string().min(1),
-  instruction: z.enum(["CONTINUE", "IMPROVE", "FIX_GRAMMAR", "SHORTEN", "EXPAND"]).default("IMPROVE"),
+  instruction: z.enum(["CONTINUE", "IMPROVE", "FIX_GRAMMAR", "SHORTEN", "EXPAND", "SIMPLIFY"]).default("IMPROVE"),
 });
 
 const INSTRUCTION_PROMPTS: Record<string, string> = {
@@ -788,6 +788,7 @@ const INSTRUCTION_PROMPTS: Record<string, string> = {
   FIX_GRAMMAR: "Fix any grammar, spelling, or punctuation mistakes in this paragraph, changing wording as little as possible. Return ONLY the corrected paragraph.",
   SHORTEN: "Make this paragraph more concise while keeping the key meaning. Return ONLY the shortened paragraph.",
   EXPAND: "Expand this paragraph with more natural detail/description. Return ONLY the expanded paragraph.",
+  SIMPLIFY: "Rewrite this paragraph using simpler vocabulary and shorter, less complex sentence structures (aim for a lower CEFR level) while keeping the same meaning and roughly the same length - this is about reducing difficulty, not length. Return ONLY the simplified paragraph.",
 };
 
 /**
@@ -835,6 +836,248 @@ router.post("/writing-assist", async (req, res) => {
       text: null,
       note: friendlyGeminiError(err, "ช่วยเขียน"),
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Create Mode: whole-passage AI Assistant actions - Generate Vocabulary,
+// Generate Questions, Generate Summary, Generate Translation. Each operates on
+// the entire composed passage at once (unlike writing-assist above, which is
+// per-paragraph), populating the Vocabulary panel / Question Builder /
+// Description field / translation respectively.
+// ---------------------------------------------------------------------------
+
+const vocabularyDetectInput = z.object({
+  passage: z.string().min(1),
+  targetLang: z.string().default("th"),
+  max: z.number().int().min(1).max(20).default(10),
+});
+
+/**
+ * POST /api/ai/vocabulary-detect { passage, targetLang, max }
+ * Powers both the Vocabulary panel's "Auto Detect" mode and the AI Assistant's
+ * "Generate Vocabulary" button: identifies the most notable/difficult words in
+ * the passage and gives each a short translation, in a single efficient call
+ * (rather than fanning out to the full per-word Kaikki/Free Dictionary/Gemini
+ * pipeline used by the Reading Workspace's double-click popup).
+ */
+router.post("/vocabulary-detect", async (req, res) => {
+  try {
+    const { passage, targetLang, max } = vocabularyDetectInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const targetLangName = LANG_NAMES[targetLang] ?? targetLang;
+
+    if (!geminiKey) {
+      return res.json({ source: "offline", vocabulary: [], note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)" });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const prompt = `Reading passage:\n\n${passage}\n\nIdentify up to ${max} of the most notable/difficult English words or short phrases actually used in this passage - words a learner reading it would likely want defined. For each: headword (exact form as it appears, or its dictionary/base form), meaning (a short ${targetLangName} translation), and ipa (IPA pronunciation, or null if unsure).`;
+
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: "You are an experienced ESL teacher picking out vocabulary worth teaching from a passage.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                headword: { type: Type.STRING },
+                meaning: { type: Type.STRING },
+                ipa: { type: Type.STRING, nullable: true },
+              },
+              required: ["headword", "meaning"],
+            },
+          },
+          temperature: 0.3,
+        },
+      })
+    );
+
+    const raw = response.text;
+    if (!raw) throw new Error("Gemini returned an empty response");
+    const parsed = JSON.parse(raw);
+
+    const vocabulary = (Array.isArray(parsed) ? parsed : [])
+      .filter((v: any) => v?.headword?.trim() && v?.meaning?.trim())
+      .slice(0, max)
+      .map((v: any) => ({ headword: String(v.headword).trim(), meaning: String(v.meaning).trim(), ipa: v.ipa ? String(v.ipa).trim() : null }));
+
+    return res.json({ source: "ai", vocabulary });
+  } catch (err: any) {
+    console.error("Gemini vocabulary-detect failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", vocabulary: [], note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({ source: "offline", vocabulary: [], note: friendlyGeminiError(err, "ตรวจจับคำศัพท์") });
+  }
+});
+
+const generateQuestionsForPassageInput = z.object({
+  passage: z.string().min(1),
+  numQuestions: z.number().int().min(1).max(30).default(8),
+  targetLang: z.string().default("th"),
+});
+
+const PASSAGE_QUESTION_TYPES = ["MULTIPLE_CHOICE", "TRUE_FALSE", "FILL_BLANK", "SHORT_ANSWER", "ESSAY"];
+
+/**
+ * POST /api/ai/generate-questions-for-passage { passage, numQuestions, targetLang }
+ * AI Assistant's "Generate Questions" button - populates the Question Builder
+ * from whatever passage is currently composed (any Content Source). Matching/
+ * Ordering aren't generated here (see reading.ts's CONCRETE_QUESTION_TYPES
+ * comment) - those stay manually-authored only.
+ */
+router.post("/generate-questions-for-passage", async (req, res) => {
+  try {
+    const { passage, numQuestions, targetLang } = generateQuestionsForPassageInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+
+    if (!geminiKey) {
+      return res.json({ source: "offline", questions: [], note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)" });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const prompt = `Reading passage:\n\n${passage}\n\nWrite exactly ${numQuestions} reading-comprehension questions based only on this passage, mixing general comprehension, vocabulary-in-context, and detail questions.
+Use only these question types: ${PASSAGE_QUESTION_TYPES.join(", ")}.
+- MULTIPLE_CHOICE: exactly 4 options, one correct answer.
+- TRUE_FALSE: options must be exactly ["True", "False"].
+- FILL_BLANK: options empty; put the missing word/phrase in "answer".
+- SHORT_ANSWER: options empty; put a concise model answer in "answer".
+- ESSAY: options empty; put a short model answer / grading note in "answer" (free-response, not auto-graded).
+Each question needs "type", "skill" (a short label like "Detail" or "Vocabulary in Context"), "prompt", "options", and "answer".`;
+
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          systemInstruction: "You are an experienced ESL teacher writing reading-comprehension questions.",
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                type: { type: Type.STRING, enum: PASSAGE_QUESTION_TYPES },
+                skill: { type: Type.STRING },
+                prompt: { type: Type.STRING },
+                options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                answer: { type: Type.STRING },
+              },
+              required: ["type", "skill", "prompt", "answer"],
+            },
+          },
+          temperature: 0.5,
+        },
+      })
+    );
+
+    const raw = response.text;
+    if (!raw) throw new Error("Gemini returned an empty response");
+    const parsed = JSON.parse(raw);
+
+    const questions = (Array.isArray(parsed) ? parsed : [])
+      .filter((q: any) => q?.prompt?.trim() && q?.answer?.trim())
+      .slice(0, numQuestions)
+      .map((q: any) => ({
+        type: PASSAGE_QUESTION_TYPES.includes(q.type) ? q.type : "MULTIPLE_CHOICE",
+        skill: q.skill ? String(q.skill).trim() : "Detail",
+        prompt: String(q.prompt).trim(),
+        options: Array.isArray(q.options) ? q.options.map(String) : [],
+        answer: String(q.answer).trim(),
+      }));
+
+    if (!questions.length) throw new Error("Gemini returned no usable questions");
+    return res.json({ source: "ai", questions });
+  } catch (err: any) {
+    console.error("Gemini generate-questions-for-passage failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", questions: [], note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({ source: "offline", questions: [], note: friendlyGeminiError(err, "สร้างคำถาม") });
+  }
+});
+
+const generateSummaryInput = z.object({
+  passage: z.string().min(1),
+  targetLang: z.string().default("th"),
+});
+
+/** POST /api/ai/generate-summary { passage, targetLang } - AI Assistant's "Generate Summary" button, fills the Description field. */
+router.post("/generate-summary", async (req, res) => {
+  try {
+    const { passage, targetLang } = generateSummaryInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const targetLangName = LANG_NAMES[targetLang] ?? targetLang;
+
+    if (!geminiKey) {
+      return res.json({ source: "offline", summary: null, note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)" });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Reading passage:\n\n${passage}\n\nWrite a short (1-2 sentence) summary/blurb of this passage in ${targetLangName}, suitable as a "Description" field shown to readers deciding whether to read it. Return ONLY the summary text.`,
+        config: { systemInstruction: "You write concise, appealing descriptions for reading passages.", temperature: 0.5 },
+      })
+    );
+
+    const summary = (response.text ?? "").trim();
+    if (!summary) throw new Error("Gemini returned an empty response");
+    return res.json({ source: "ai", summary });
+  } catch (err: any) {
+    console.error("Gemini generate-summary failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", summary: null, note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({ source: "offline", summary: null, note: friendlyGeminiError(err, "สร้างคำโปรย") });
+  }
+});
+
+const generateTranslationInput = z.object({
+  passage: z.string().min(1),
+  targetLang: z.string().default("th"),
+});
+
+/** POST /api/ai/generate-translation { passage, targetLang } - AI Assistant's "Generate Translation" button (whole-passage translation, for Test Mode "Reading + Translation"). */
+router.post("/generate-translation", async (req, res) => {
+  try {
+    const { passage, targetLang } = generateTranslationInput.parse(req.body);
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const targetLangName = LANG_NAMES[targetLang] ?? targetLang;
+
+    if (!geminiKey) {
+      return res.json({ source: "offline", translation: null, note: "ฟีเจอร์นี้ต้องใช้ Gemini API (ยังไม่ได้ตั้งค่า GEMINI_API_KEY บนเซิร์ฟเวอร์)" });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Translate this entire reading passage into ${targetLangName}, naturally and fluently, preserving paragraph breaks:\n\n${passage}`,
+        config: { systemInstruction: "You are a precise, natural literary translator.", temperature: 0.3 },
+      })
+    );
+
+    const translation = (response.text ?? "").trim();
+    if (!translation) throw new Error("Gemini returned an empty response");
+    return res.json({ source: "ai", translation });
+  } catch (err: any) {
+    console.error("Gemini generate-translation failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ source: "offline", translation: null, note: "ข้อมูลที่ส่งมาไม่ถูกต้อง" });
+    }
+    return res.json({ source: "offline", translation: null, note: friendlyGeminiError(err, "แปลบทความ") });
   }
 });
 

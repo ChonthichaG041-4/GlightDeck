@@ -246,10 +246,18 @@ model Article {
   translation   String?           @db.Text
   questionsJson Json?
   examMode      String?
-  cefrLevel     String?
+  cefrLevel     String?           // also doubles as "Difficulty" in the unified Generate/Create layout
   testMode      String?
   visibility    ArticleVisibility @default(PRIVATE)
   viewCount     Int               @default(0)
+
+  // Unified Generate/Create composer fields (shared layout - see PassageMetaFields).
+  description    String?           @db.Text
+  tags           String[]         @default([])
+  contentSource  String?          // AI_GENERATE | WRITE_MANUALLY | PASTE_TEXT | IMPORT_DOCX | IMPORT_PDF | IMPORT_MARKDOWN | IMPORT_BOOK
+  blocksJson     Json?            // rich block-editor structure: [{ id, type, ...fields }] - Article.content stays the flattened plain-text mirror
+  vocabularyMode String?          @default("NONE") // AUTO | MANUAL | NONE
+  vocabularyJson Json?            // [{ headword, meaning, ipa? }] - auto-detected or manually curated per-article word list
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
