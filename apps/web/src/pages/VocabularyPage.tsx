@@ -2013,7 +2013,7 @@ function GenerateSetDialog({
               {items.map((it, i) => (
                 <div key={i} className="space-y-2 rounded-md border p-2">
                   <div className="flex items-start gap-2">
-                    <div className="grid flex-1 grid-cols-2 gap-2">
+                    <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
                       <Input
                         value={it.headword}
                         onChange={(e) =>
@@ -2036,7 +2036,7 @@ function GenerateSetDialog({
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <Select
                       value={it.type}
                       onValueChange={(v) => updateItem(i, { type: v })}
@@ -2068,7 +2068,7 @@ function GenerateSetDialog({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {targetLangs.map((code) => (
                       <div key={code}>
                         <Label className="text-xs">{languageLabel(code)}</Label>

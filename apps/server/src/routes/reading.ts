@@ -52,11 +52,20 @@ router.get("/articles", async (req, res) => {
     orderBy,
     select: {
       id: true, title: true, category: true, source: true, createdAt: true,
-      visibility: true, status: true, tags: true, cefrLevel: true,
+      visibility: true, status: true, tags: true, cefrLevel: true, description: true, content: true,
       studyLists: { select: { studyListId: true } },
     },
   });
-  res.json(articles.map(({ studyLists, ...a }) => ({ ...a, studyListIds: studyLists.map((s) => s.studyListId) })));
+  res.json(
+    articles.map(({ studyLists, description, content, ...a }) => ({
+      ...a,
+      studyListIds: studyLists.map((s) => s.studyListId),
+      // Short preview for card UIs - prefer the author-written description,
+      // fall back to a trimmed snippet of the body so every article (even
+      // ones from the older paste-your-own-text flow) has something to show.
+      excerpt: (description?.trim() || content.trim()).slice(0, 160),
+    }))
+  );
 });
 
 // ---------------------------------------------------------------------------

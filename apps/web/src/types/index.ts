@@ -74,6 +74,8 @@ export interface Article {
   tags?: string[];
   cefrLevel?: string | null;
   studyListIds?: string[];
+  /** Short preview text for card UIs (description, or a trimmed content snippet). List endpoint only. */
+  excerpt?: string;
 }
 
 export interface SentenceBookmark {

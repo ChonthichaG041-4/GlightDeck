@@ -477,9 +477,21 @@ export default function ReadingWorkspace({
 
     const rect = range.getBoundingClientRect();
     setColorPickerOpen(false);
+    // Clamp so the toolbar (rendered centered on x via -translate-x-1/2, and
+    // above the selection via -translate-y-full) never renders off-screen -
+    // on a narrow phone, selecting text near the left/right margin (which is
+    // most of the passage width) would otherwise push it partly or fully
+    // outside the viewport with no way to reach its buttons.
+    const TOOLBAR_HALF_WIDTH = 130;
+    const MARGIN = 8;
+    const clampedX = Math.min(
+      Math.max(rect.left + rect.width / 2, TOOLBAR_HALF_WIDTH + MARGIN),
+      window.innerWidth - TOOLBAR_HALF_WIDTH - MARGIN
+    );
+    const clampedY = Math.max(rect.top, 48);
     setSelectionToolbar({
-      x: rect.left + rect.width / 2,
-      y: rect.top,
+      x: clampedX,
+      y: clampedY,
       text,
       start: Math.min(start, end),
       end: Math.max(start, end),
@@ -850,7 +862,7 @@ export default function ReadingWorkspace({
       <div key={key} className="group/para relative py-1 pl-6 mt-4">
         <button
           type="button"
-          className="absolute left-0 top-1.5 opacity-0 transition-opacity group-hover/para:opacity-100"
+          className="absolute left-0 top-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/para:opacity-100"
           onClick={() => toggleParagraphBookmark(paraStart, paraText)}
           title="Bookmark this paragraph"
         >
@@ -955,7 +967,7 @@ export default function ReadingWorkspace({
         })}
         <button
           type="button"
-          className="ml-0.5 inline-flex opacity-0 transition-opacity group-hover/sentence:opacity-100"
+          className="ml-0.5 inline-flex opacity-100 transition-opacity sm:opacity-0 sm:group-hover/sentence:opacity-100"
           onClick={() => explainSentenceClick(sentenceText.trim())}
           title="AI Explain this sentence"
         >
@@ -2299,102 +2311,141 @@ function QuestionPlayerFullscreen({
   const C = 2 * Math.PI * R;
   const dash = (donutPercent / 100) * C;
   const badge = QUESTION_TYPE_BADGES[current?.type ?? "MULTIPLE_CHOICE"] ?? QUESTION_TYPE_BADGES.MULTIPLE_CHOICE;
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  const sidebarPanel = (
+    <>
+      <div className="flex items-center gap-2">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <BookOpen className="h-5 w-5" />
+        </div>
+        <div className="leading-tight">
+          <p className="font-bold">LingoDeck</p>
+          <p className="text-xs text-muted-foreground">Reading Practice</p>
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <h3 className="text-sm font-semibold">Reading Progress</h3>
+          <StatRow icon={<Percent className="h-4 w-4" />} label="Progress" value={`${scrollProgress}%`} />
+          <StatRow icon={<Clock className="h-4 w-4" />} label="Reading Time" value={formatTime(elapsedSec)} />
+          <StatRow icon={<BookOpen className="h-4 w-4" />} label="Words Saved" value={String(wordsSavedCount)} />
+          <StatRow icon={<ListChecks className="h-4 w-4" />} label="Questions" value={String(total)} />
+          <StatRow icon={<Bookmark className="h-4 w-4" />} label="Bookmarks" value={String(bookmarksCount)} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <h3 className="text-sm font-semibold">Your Progress</h3>
+          <div className="relative mx-auto flex h-32 w-32 items-center justify-center">
+            <svg width="128" height="128" viewBox="0 0 128 128" className="-rotate-90">
+              <circle cx="64" cy="64" r={R} fill="none" strokeWidth="10" className="stroke-muted" />
+              <circle
+                cx="64"
+                cy="64"
+                r={R}
+                fill="none"
+                strokeWidth="10"
+                strokeLinecap="round"
+                className="stroke-primary transition-all"
+                strokeDasharray={`${dash} ${C}`}
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-2xl font-bold">{donutPercent}%</span>
+              <span className="text-xs text-muted-foreground">of {total}</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Answered</span>
+            <span className="font-medium text-foreground">{answeredExcludingCurrent}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-primary" /> Current</span>
+            <span className="font-medium text-foreground">1</span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full border border-muted-foreground/40" /> Unanswered</span>
+            <span className="font-medium text-foreground">{unansweredExcludingCurrent}</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <h3 className="text-sm font-semibold">Question Navigator</h3>
+          <div className="grid grid-cols-4 gap-2">
+            {questions.map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => {
+                  onNavigate(i);
+                  setMobileNavOpen(false);
+                }}
+                className={cn(
+                  "flex h-9 w-9 items-center justify-center rounded-full border text-sm font-medium transition-colors",
+                  i === currentIndex
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : isAnswered(i)
+                      ? "border-emerald-500 bg-emerald-500 text-white"
+                      : "border-muted-foreground/30 text-muted-foreground hover:bg-accent"
+                )}
+              >
+                {i + 1}
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </>
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex bg-muted/30">
-      {/* Left sidebar */}
+      {/* Left sidebar - desktop only (sm+). Below sm it's replaced by the
+          slide-in drawer below, opened via the menu button in the main
+          panel's header - without it, mobile users stuck in this fullscreen
+          quiz overlay had no progress feedback or question-jump at all. */}
       <div className="hidden w-72 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-background p-5 sm:flex">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <BookOpen className="h-5 w-5" />
-          </div>
-          <div className="leading-tight">
-            <p className="font-bold">LingoDeck</p>
-            <p className="text-xs text-muted-foreground">Reading Practice</p>
-          </div>
+        {sidebarPanel}
+      </div>
+
+      {/* Mobile drawer version of the same panel */}
+      <div className={cn("fixed inset-0 z-10 sm:hidden", !mobileNavOpen && "pointer-events-none")} aria-hidden={!mobileNavOpen}>
+        <div
+          className={cn("absolute inset-0 bg-black/40 transition-opacity", mobileNavOpen ? "opacity-100" : "opacity-0")}
+          onClick={() => setMobileNavOpen(false)}
+        />
+        <div
+          className={cn(
+            "absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col gap-4 overflow-y-auto border-r bg-background p-5 shadow-xl transition-transform duration-200",
+            mobileNavOpen ? "translate-x-0" : "-translate-x-full"
+          )}
+        >
+          {sidebarPanel}
         </div>
-
-        <Card>
-          <CardContent className="space-y-3 p-4">
-            <h3 className="text-sm font-semibold">Reading Progress</h3>
-            <StatRow icon={<Percent className="h-4 w-4" />} label="Progress" value={`${scrollProgress}%`} />
-            <StatRow icon={<Clock className="h-4 w-4" />} label="Reading Time" value={formatTime(elapsedSec)} />
-            <StatRow icon={<BookOpen className="h-4 w-4" />} label="Words Saved" value={String(wordsSavedCount)} />
-            <StatRow icon={<ListChecks className="h-4 w-4" />} label="Questions" value={String(total)} />
-            <StatRow icon={<Bookmark className="h-4 w-4" />} label="Bookmarks" value={String(bookmarksCount)} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-4 p-4">
-            <h3 className="text-sm font-semibold">Your Progress</h3>
-            <div className="relative mx-auto flex h-32 w-32 items-center justify-center">
-              <svg width="128" height="128" viewBox="0 0 128 128" className="-rotate-90">
-                <circle cx="64" cy="64" r={R} fill="none" strokeWidth="10" className="stroke-muted" />
-                <circle
-                  cx="64"
-                  cy="64"
-                  r={R}
-                  fill="none"
-                  strokeWidth="10"
-                  strokeLinecap="round"
-                  className="stroke-primary transition-all"
-                  strokeDasharray={`${dash} ${C}`}
-                />
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-2xl font-bold">{donutPercent}%</span>
-                <span className="text-xs text-muted-foreground">of {total}</span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Answered</span>
-              <span className="font-medium text-foreground">{answeredExcludingCurrent}</span>
-            </div>
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-primary" /> Current</span>
-              <span className="font-medium text-foreground">1</span>
-            </div>
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full border border-muted-foreground/40" /> Unanswered</span>
-              <span className="font-medium text-foreground">{unansweredExcludingCurrent}</span>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-3 p-4">
-            <h3 className="text-sm font-semibold">Question Navigator</h3>
-            <div className="grid grid-cols-4 gap-2">
-              {questions.map((_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => onNavigate(i)}
-                  className={cn(
-                    "flex h-9 w-9 items-center justify-center rounded-full border text-sm font-medium transition-colors",
-                    i === currentIndex
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : isAnswered(i)
-                        ? "border-emerald-500 bg-emerald-500 text-white"
-                        : "border-muted-foreground/30 text-muted-foreground hover:bg-accent"
-                  )}
-                >
-                  {i + 1}
-                </button>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Main question panel */}
       <div className="flex-1 overflow-y-auto p-5 sm:p-10 bg-background">
         <div className="mx-auto max-w-3xl space-y-5">
-          <div className="flex items-center justify-between">
-            <h1 className="text-xl font-bold">
-              Question {currentIndex + 1} <span className="font-normal text-muted-foreground">of {total}</span>
-            </h1>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                aria-label="Show progress/navigator"
+                onClick={() => setMobileNavOpen(true)}
+                className="rounded-md border p-2 text-muted-foreground hover:bg-accent hover:text-foreground sm:hidden"
+              >
+                <ListChecks className="h-4 w-4" />
+              </button>
+              <h1 className="text-xl font-bold">
+                Question {currentIndex + 1} <span className="font-normal text-muted-foreground">of {total}</span>
+              </h1>
+            </div>
             <Button variant="outline" size="sm" className="gap-1.5" onClick={onExit}>
               <LogOut className="h-4 w-4" /> Exit
             </Button>

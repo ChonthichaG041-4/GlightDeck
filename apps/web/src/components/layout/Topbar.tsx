@@ -11,7 +11,7 @@ export function Topbar({ onMenuClick }: { onMenuClick?: () => void }) {
   const { data: home } = useHomeSummary();
 
   return (
-    <header className="flex h-16 items-center gap-2 border-b bg-card/60 px-3 backdrop-blur sm:gap-4 md:px-6">
+    <header className="flex h-16 items-center justify-between gap-2 border-b bg-card/60 px-3 backdrop-blur sm:gap-4 md:px-6">
       {onMenuClick && (
         <button
           type="button"
