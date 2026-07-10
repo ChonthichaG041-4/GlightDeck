@@ -335,15 +335,15 @@ function StudyListRail({
 }
 
 const STATUS_BADGE: Record<string, string> = {
-  DRAFT: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300",
-  PUBLISHED: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300",
-  ARCHIVED: "bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
+  DRAFT: "bg-[#EEEAFD] text-[#444C6A]",
+  PUBLISHED: "bg-[#E0F9EB] text-[#30B481]",
+  ARCHIVED: "bg-[#EAF2FD] text-[#44466A]",
 };
 
 const STATUS_DOT: Record<string, string> = {
-  DRAFT: "bg-amber-500",
-  PUBLISHED: "bg-emerald-500",
-  ARCHIVED: "bg-slate-400",
+  DRAFT: "bg-[#444C6A]",
+  PUBLISHED: "bg-[#30B481]",
+  ARCHIVED: "bg-[#44466A]",
 };
 
 export function ArticleCard({
