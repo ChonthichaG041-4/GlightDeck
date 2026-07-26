@@ -52,5 +52,5 @@ export const CONTENT_SOURCES: { value: string; icon: ComponentType<{ className?:
   { value: "IMPORT_DOCX", icon: FileType, title: "Import DOCX", description: "Coming soon", enabled: false },
   { value: "IMPORT_PDF", icon: FileUp, title: "Import PDF", description: "Coming soon", enabled: false },
   { value: "IMPORT_MARKDOWN", icon: FileCode2, title: "Import Markdown", description: "Coming soon", enabled: false },
-  { value: "IMPORT_BOOK", icon: ImageIcon, title: "Import Book/Reading", description: "Photo/scan OCR - opens a guided import wizard", enabled: true },
+  { value: "IMPORT_BOOK", icon: ImageIcon, title: "Import ReadingBook", description: "Photo/scan OCR - opens a guided import wizard", enabled: true },
 ];

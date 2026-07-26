@@ -362,7 +362,7 @@ export function ArticleCard({
   return (
     <>
       <Card className="group relative transition-shadow hover:shadow-md">
-        <Link to={`/articles/${article.id}`} className="block">
+        <Link to={`/article/${article.id}`} className="block">
           <CardContent className="flex items-start gap-3 p-4 pb-9 pr-16">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
               <BookText className="h-5 w-5" />
@@ -413,7 +413,7 @@ export function ArticleCard({
 
         <div className="absolute bottom-3 right-3 flex items-center gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:focus-within:opacity-100 sm:group-hover:opacity-100">
           <Link
-            to={`/listening/${article.id}`}
+            to={`/article/${article.id}/practice/listening`}
             aria-label="Test Listening"
             title="Test Listening"
             className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -422,7 +422,7 @@ export function ArticleCard({
             <Headphones className="h-4 w-4" />
           </Link>
           <Link
-            to={`/reading/${article.id}/edit`}
+            to={`/article/${article.id}/edit`}
             aria-label="Edit article"
             title="Edit"
             className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"

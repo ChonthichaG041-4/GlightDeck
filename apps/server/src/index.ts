@@ -5,6 +5,8 @@ import morgan from "morgan";
 import { withClerk } from "./middleware/auth";
 import apiRouter from "./routes";
 import { errorHandler, notFound } from "./middleware/errorHandler";
+import { AUDIO_CACHE_URL_PREFIX, getCacheDir } from "./tts/services/AudioCache";
+import { warmUpKokoro } from "./tts/providers/KokoroProvider";
 
 // Without these, a truly uncaught exception or unhandled promise rejection
 // anywhere (e.g. an OOM spike, or a raw stream 'error' event Node treats as
@@ -53,6 +55,14 @@ app.use(
 );
 app.use(express.json({ limit: "2mb" }));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+
+// Generated Listening audio (Kokoro/Edge TTS output) - served unauthenticated
+// on purpose: <audio> tags can't attach a Clerk bearer token, and filenames
+// are opaque sha256 cache keys (see tts/services/AudioCache.ts), not
+// sequential/guessable ids. Mounted before withClerk so playback never hits
+// the auth middleware at all.
+app.use(AUDIO_CACHE_URL_PREFIX, express.static(getCacheDir()));
+
 app.use(withClerk);
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "glightdeck-api" }));
@@ -64,4 +74,9 @@ app.use(errorHandler);
 
 app.listen(PORT, () => {
   console.log(`GlightDeck API listening on http://localhost:${PORT}`);
+  // Fire-and-forget: start pulling in the Kokoro model now instead of on the
+  // first Listening "play" click, so that click usually lands on an
+  // already-warm model instead of the (multi-second-to-multi-minute,
+  // connection-dependent) first-time download - see KokoroProvider.ts.
+  warmUpKokoro();
 });

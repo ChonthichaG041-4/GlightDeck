@@ -31,7 +31,7 @@ export default function ArticleReaderPage() {
       questions={passage.questions}
       testMode={passage.testMode ?? "READING_ONLY"}
       metaLine={passage.cefrLevel ?? passage.category}
-      onBack={() => navigate("/reading")}
+      onBack={() => navigate(`/article/${id}`)}
       readOnly={passage.isOwner === false}
     />
   );

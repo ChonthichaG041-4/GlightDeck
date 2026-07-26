@@ -58,7 +58,7 @@ export default function ArticleDetailPage() {
     if (!passage) return;
     setQuizError(null);
     if (questionCount > 0) {
-      navigate(`/reading/${passage.id}`);
+      navigate(`/article/${passage.id}/practice/reading`);
       return;
     }
     generateQuestions.mutate(
@@ -71,7 +71,7 @@ export default function ArticleDetailPage() {
           }
           updatePassage.mutate(
             { id: passage.id, questions: data.questions, testMode: "QUESTIONS" },
-            { onSuccess: () => navigate(`/reading/${passage.id}`) }
+            { onSuccess: () => navigate(`/article/${passage.id}/practice/reading`) }
           );
         },
         onError: () => setQuizError("สร้างคำถามไม่สำเร็จ ลองใหม่อีกครั้ง"),
@@ -152,10 +152,10 @@ export default function ArticleDetailPage() {
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             <Button asChild variant="outline" className="justify-start gap-2">
-              <Link to={`/reading/${passage.id}`}><BookOpen className="h-4 w-4" /> Start Reading</Link>
+              <Link to={`/article/${passage.id}/practice/reading`}><BookOpen className="h-4 w-4" /> Start Reading</Link>
             </Button>
             <Button asChild variant="outline" className="justify-start gap-2">
-              <Link to={`/listening/${passage.id}`}><Headphones className="h-4 w-4" /> Start Listening</Link>
+              <Link to={`/article/${passage.id}/practice/listening`}><Headphones className="h-4 w-4" /> Start Listening</Link>
             </Button>
             {passage.isOwner && (
               <Button
@@ -179,13 +179,13 @@ export default function ArticleDetailPage() {
             )}
             {passage.isOwner && (
               <Button asChild variant="outline" className="justify-start gap-2">
-                <Link to={`/reading/${passage.id}/edit`}><Pencil className="h-4 w-4" /> Edit</Link>
+                <Link to={`/article/${passage.id}/edit`}><Pencil className="h-4 w-4" /> Edit</Link>
               </Button>
             )}
             <Button
               variant="outline"
               className="justify-start gap-2"
-              onClick={() => duplicatePassage.mutate(passage.id, { onSuccess: (d) => navigate(`/articles/${d.id}`) })}
+              onClick={() => duplicatePassage.mutate(passage.id, { onSuccess: (d) => navigate(`/article/${d.id}`) })}
               disabled={duplicatePassage.isPending}
             >
               <Copy className="h-4 w-4" /> {duplicatePassage.isPending ? "กำลังทำสำเนา..." : "Duplicate"}

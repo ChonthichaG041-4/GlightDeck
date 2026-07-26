@@ -21,14 +21,15 @@ import dashboardRouter from "./dashboard";
 const router = Router();
 
 // Every /api/* route requires an authenticated + synced local user,
-// and touching any endpoint counts toward today's streak.
-router.use(requireUser, async (req, _res, next) => {
-  try {
-    await touchStreak((req as any).dbUser.id);
-    next();
-  } catch (err) {
-    next(err);
-  }
+// and touching any endpoint counts toward today's streak. Streak bookkeeping
+// is a no-op after the first request of the day (see touchStreak) and isn't
+// needed to serve the response, so it runs in the background instead of
+// blocking every single API call on it.
+router.use(requireUser, (req, _res, next) => {
+  touchStreak((req as any).dbUser).catch((err) => {
+    console.error("touchStreak failed:", err);
+  });
+  next();
 });
 
 router.use("/words/lookup", lookupRouter);

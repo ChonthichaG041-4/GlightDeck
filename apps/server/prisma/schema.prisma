@@ -187,6 +187,9 @@ model Word {
   @@index([collectionId])
   @@index([userId, status])
   @@index([userId, dueDate])
+  @@index([userId, level])
+  @@index([userId, type])
+  @@index([userId, favorite])
 }
 
 model WordTag {
@@ -270,6 +273,24 @@ model Article {
   vocabularyMode String?          @default("NONE") // AUTO | MANUAL | NONE
   vocabularyJson Json?            // [{ headword, meaning, ipa? }] - auto-detected or manually curated per-article word list
 
+  // Pre-generated Listening audio (currently only populated by the Import
+  // ReadingBook/Image OCR wizard, during its "AI is Processing" step) so
+  // Listening practice (ListeningWorkspace) can play these back directly
+  // instead of re-synthesizing on every visit. All optional/nullable - most
+  // articles (anything not imported via OCR) have none of these and fall
+  // back to on-demand generation exactly as before.
+  audioUrl            String? // combined "read everything" narration: article + questions + choices
+  articleAudioUrl     String? // passage/article text only
+  questionsAudioUrl   String? // every question prompt, combined into one track
+  choicesAudioUrl     String? // every question's answer choices, combined into one track
+  instructionAudioUrl String? // the spoken instruction/description alone
+  // Per-question "Instruction + this question's prompt + its answer choices"
+  // read together as one clip - what ListeningWorkspace's Self-Paced
+  // "Question / Options" card actually plays. JSON array of string|null,
+  // same order/length as questionsJson (null entries fall back to on-demand
+  // generation for that one question, e.g. if TTS failed for it specifically).
+  questionAudioUrls   Json?
+
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -319,12 +340,13 @@ model StudyListArticle {
 // character offsets into Article.content (client computes them from the
 // rendered text, since the passage is plain text without any markup).
 model Highlight {
-  id          String   @id @default(cuid())
-  text        String
-  startOffset Int
-  endOffset   Int
-  color       String   @default("#fde68a")
-  createdAt   DateTime @default(now())
+  id            String   @id @default(cuid())
+  text          String
+  startOffset   Int
+  endOffset     Int
+  color         String   @default("#fde68a")
+  questionIndex Int? // null = Reading-passage highlight; set = Listening's per-question highlight (Guided mode)
+  createdAt     DateTime @default(now())
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)

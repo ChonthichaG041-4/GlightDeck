@@ -4,6 +4,11 @@ export const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL ?? "http://localhost:4000/api",
 });
 
+/** Server origin with no "/api" suffix - for hitting routes mounted outside the API router, like generated audio at /audio-cache/*. */
+export function getServerOrigin(): string {
+  return (api.defaults.baseURL ?? "").replace(/\/api\/?$/, "");
+}
+
 let attached = false;
 
 /** Call once near the app root (see App.tsx) to attach the Clerk session token to every request. */

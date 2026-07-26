@@ -1,7 +1,7 @@
-// OpenRouter (https://openrouter.ai) helper - used ONLY by the Import Book/Reading
+// OpenRouter (https://openrouter.ai) helper - used ONLY by the Import ReadingBook
 // (OCR) route so far. Every other AI feature in this app still runs on Gemini
 // (see lib/gemini.ts) - this is a deliberate per-feature choice, not a provider
-// migration, because Import Book/Reading's per-page-image cost adds up fastest
+// migration, because Import ReadingBook's per-page-image cost adds up fastest
 // and a free vision model is a good fit for it specifically.
 //
 // Runs on OpenRouter's free tier - $0 per token, subject to OpenRouter's
@@ -49,7 +49,11 @@ function errorText(err: any): string {
 /** Transient - provider overloaded / no backend currently available for this (often free) model. Retry-worthy. */
 export function isOpenRouterOverloaded(err: any): boolean {
   const text = errorText(err);
-  return err?.status === 502 || err?.status === 503 || /overloaded|no.*provider.*available|temporarily unavailable/i.test(text);
+  return (
+    err?.status === 502 ||
+    err?.status === 503 ||
+    /overloaded|no.*provider.*available|temporarily unavailable/i.test(text)
+  );
 }
 
 /** Free-tier daily request cap hit, or a real auth/quota problem - retrying won't help. */
@@ -61,7 +65,11 @@ export function isOpenRouterAuthError(err: any): boolean {
   return err?.status === 401 || err?.status === 403;
 }
 
-export async function withOpenRouterRetry<T>(fn: () => Promise<T>, retries = 2, baseDelayMs = 1200): Promise<T> {
+export async function withOpenRouterRetry<T>(
+  fn: () => Promise<T>,
+  retries = 2,
+  baseDelayMs = 1200,
+): Promise<T> {
   let lastErr: any;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -69,14 +77,19 @@ export async function withOpenRouterRetry<T>(fn: () => Promise<T>, retries = 2, 
     } catch (err: any) {
       lastErr = err;
       if (!isOpenRouterOverloaded(err) || attempt === retries) throw err;
-      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * 2 ** attempt));
+      await new Promise((resolve) =>
+        setTimeout(resolve, baseDelayMs * 2 ** attempt),
+      );
     }
   }
   throw lastErr;
 }
 
 /** Thai-language note for the client, distinguishing the failure modes that actually matter to the user. */
-export function friendlyOpenRouterError(err: any, featureLabel: string): string {
+export function friendlyOpenRouterError(
+  err: any,
+  featureLabel: string,
+): string {
   const detail = errorText(err) || "unknown error";
   if (isOpenRouterRateLimited(err)) {
     return (
@@ -111,7 +124,13 @@ export interface OpenRouterImagePart {
  * helpers above can classify the failure.
  */
 export async function callOpenRouterVision({
-  systemPrompt, userText, images, apiKey, model, models, temperature = 0.2,
+  systemPrompt,
+  userText,
+  images,
+  apiKey,
+  model,
+  models,
+  temperature = 0.2,
 }: {
   systemPrompt: string;
   userText: string;
@@ -125,12 +144,18 @@ export async function callOpenRouterVision({
 }): Promise<string> {
   const content: any[] = [{ type: "text", text: userText }];
   for (const img of images) {
-    content.push({ type: "image_url", image_url: { url: `data:${img.mimeType};base64,${img.base64}` } });
+    content.push({
+      type: "image_url",
+      image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+    });
   }
 
   const candidateList = model
     ? undefined
-    : models ?? (process.env.OPENROUTER_MODEL ? [process.env.OPENROUTER_MODEL] : DEFAULT_OPENROUTER_FALLBACKS);
+    : (models ??
+      (process.env.OPENROUTER_MODEL
+        ? [process.env.OPENROUTER_MODEL]
+        : DEFAULT_OPENROUTER_FALLBACKS));
 
   const response = await fetch(OPENROUTER_URL, {
     method: "POST",
@@ -139,11 +164,13 @@ export async function callOpenRouterVision({
       authorization: `Bearer ${apiKey}`,
       // Optional but recommended by OpenRouter so requests are attributed to this app.
       "HTTP-Referer": "https://glightdeck.onrender.com",
-      "X-Title": "LingoDeck - Import Book/Reading",
+      "X-Title": "LingoDeck - Import ReadingBook",
     },
     body: JSON.stringify({
       model: model || candidateList![0],
-      ...(candidateList && candidateList.length > 1 ? { models: candidateList } : {}),
+      ...(candidateList && candidateList.length > 1
+        ? { models: candidateList }
+        : {}),
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content },
@@ -154,14 +181,32 @@ export async function callOpenRouterVision({
 
   if (!response.ok) {
     const bodyText = await response.text().catch(() => "");
-    const err: any = new Error(`OpenRouter API error ${response.status}: ${bodyText.slice(0, 500)}`);
+    const err: any = new Error(
+      `OpenRouter API error ${response.status}: ${bodyText.slice(0, 500)}`,
+    );
     err.status = response.status;
     throw err;
   }
 
-  const data: any = await response.json();
+  console.log("status =", response.status);
+  console.log("headers =", Object.fromEntries(response.headers.entries()));
+  const body = await response.text();
+
+  console.log(body);
+  if (!body.trim()) {
+    throw new Error("OpenRouter returned an empty response");
+  }
+
+  let data: any;
+
+  try {
+    data = JSON.parse(body);
+  } catch (e) {
+    throw new Error(`Invalid JSON from OpenRouter: ${body.slice(0, 500)}`);
+  }
   const text = data?.choices?.[0]?.message?.content;
-  if (!text || typeof text !== "string") throw new Error("OpenRouter returned an empty response");
+  if (!text || typeof text !== "string")
+    throw new Error("OpenRouter returned an empty response");
   return text;
 }
 
@@ -204,7 +249,7 @@ export function extractJsonObject(raw: string): any {
 
   const snippet = raw.slice(0, 800);
   const err: any = new Error(
-    `No valid JSON object found in the model's response. Raw response (first 800 chars): ${snippet}`
+    `No valid JSON object found in the model's response. Raw response (first 800 chars): ${snippet}`,
   );
   err.rawResponse = raw;
   throw err;

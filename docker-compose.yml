@@ -6,11 +6,11 @@ services:
     container_name: glightdeck-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: glightdeck
-      POSTGRES_PASSWORD: glightdeck
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: glightdeck
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - glightdeck_pgdata:/var/lib/postgresql/data
 

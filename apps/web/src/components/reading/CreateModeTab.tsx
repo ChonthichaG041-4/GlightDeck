@@ -150,15 +150,15 @@ export default function CreateModeTab({ editArticleId }: { editArticleId?: strin
     };
   }
 
-  function save(onDone?: () => void) {
+  function save(onDone?: (id: string) => void) {
     setError(null);
     if (!meta.title.trim()) return setError("กรุณาใส่ชื่อบทความ");
     if (!passage.trim()) return setError("กรุณาใส่เนื้อหาอย่างน้อย 1 บล็อก");
     const payload = buildPayload();
     if (savedId) {
-      updatePassage.mutate({ id: savedId, ...payload }, { onSuccess: () => onDone?.() });
+      updatePassage.mutate({ id: savedId, ...payload }, { onSuccess: () => onDone?.(savedId) });
     } else {
-      createPassage.mutate(payload, { onSuccess: (data) => { setSavedId(data.id); onDone?.(); } });
+      createPassage.mutate(payload, { onSuccess: (data) => { setSavedId(data.id); onDone?.(data.id); } });
     }
   }
 
@@ -193,7 +193,7 @@ export default function CreateModeTab({ editArticleId }: { editArticleId?: strin
             <p className="font-semibold text-destructive">ไม่มีสิทธิ์แก้ไข</p>
             <p className="text-sm text-muted-foreground">คุณไม่ใช่ผู้สร้างบทความนี้ จึงไม่สามารถแก้ไขได้</p>
             <Button asChild variant="outline" className="mt-2">
-              <Link to={`/reading/${editArticleId}`}>กลับไปอ่านบทความ</Link>
+              <Link to={`/article/${editArticleId}`}>กลับไปอ่านบทความ</Link>
             </Button>
           </CardContent>
         </Card>
@@ -296,7 +296,7 @@ export default function CreateModeTab({ editArticleId }: { editArticleId?: strin
               {bookImportSuccess && (
                 <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
                   <CheckCircle2 className="h-3.5 w-3.5" /> นำเข้าและบันทึกสำเร็จ: {bookImportSuccess.title}{" "}
-                  <Link to={`/reading/${bookImportSuccess.id}`} className="underline">เปิดดู</Link>
+                  <Link to={`/article/${bookImportSuccess.id}`} className="underline">เปิดดู</Link>
                 </p>
               )}
             </div>
@@ -351,13 +351,7 @@ export default function CreateModeTab({ editArticleId }: { editArticleId?: strin
         </Button>
         <Button
           className="flex-1 gap-2"
-          onClick={() => {
-            // After editing an existing article, go back to whichever My
-            // Articles list it belongs to (Reading vs. Listening are the same
-            // Article table, told apart by category).
-            const editDestination = saved?.category === "Listening" ? "/listening?tab=library" : "/reading?tab=library";
-            save(editArticleId ? () => navigate(editDestination) : undefined);
-          }}
+          onClick={() => save((id) => navigate(`/article/${id}`))}
           disabled={isSaving}
         >
           <Save className="h-4 w-4" /> {isSaving ? "Saving..." : savedId ? "Save Changes" : "Save Draft"}

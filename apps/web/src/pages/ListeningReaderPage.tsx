@@ -2,10 +2,10 @@ import { useNavigate, useParams } from "react-router-dom";
 import { usePassage } from "@/api/hooks";
 import ListeningWorkspace from "@/components/listening/ListeningWorkspace";
 
-// Route: /listening/:id - "Test Listening" from a Reading article, or opening
-// a listening exercise from Listening's own Community/My Articles tabs, all
-// land here. Same underlying Article as Reading (shared system) - this view
-// just plays its content back via TTS instead of rendering it to read.
+// Route: /article/:id/practice/listening - "Start Listening"/"Test Listening"
+// from Article Detail (or from within ReadingWorkspace) lands here. Same
+// underlying Article as Reading (shared system) - this view just plays its
+// content back via TTS instead of rendering it to read.
 export default function ListeningReaderPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -22,7 +22,7 @@ export default function ListeningReaderPage() {
       questions={passage.questions}
       testMode={passage.testMode ?? "QUESTIONS"}
       metaLine={passage.cefrLevel ?? passage.category}
-      onBack={() => navigate("/listening")}
+      onBack={() => navigate(`/article/${id}`)}
       readOnly={passage.isOwner === false}
     />
   );

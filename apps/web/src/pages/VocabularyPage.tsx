@@ -215,6 +215,12 @@ export default function VocabularyPage() {
   const activeCollectionId =
     !isGallery && collectionId !== "ALL_WORDS" ? collectionId : undefined;
 
+  // Word list is fetched in pages of PAGE_SIZE ("Load more" grows this) instead
+  // of pulling every matching word - large dictionaries were making this page
+  // slow to load. Resets back to one page whenever the filters change.
+  const PAGE_SIZE = 60;
+  const [limit, setLimit] = useState(PAGE_SIZE);
+
   const filters = useMemo(
     () => ({
       search: search || undefined,
@@ -223,9 +229,14 @@ export default function VocabularyPage() {
       status: status || undefined,
       collectionId: activeCollectionId,
       favorite: favoritesOnly ? "true" : undefined,
+      limit: String(limit),
     }),
-    [search, level, type, status, activeCollectionId, favoritesOnly],
+    [search, level, type, status, activeCollectionId, favoritesOnly, limit],
   );
+
+  useEffect(() => {
+    setLimit(PAGE_SIZE);
+  }, [search, level, type, status, activeCollectionId, favoritesOnly]);
 
   function changeCollection(v: string) {
     setCollectionId(v);
@@ -282,7 +293,9 @@ export default function VocabularyPage() {
     return p.toString();
   }
 
-  const { data: words, isLoading } = useWords(filters);
+  // In Gallery mode the word list itself is never rendered (only collection
+  // cards, via useCollections), so don't pay for fetching every word.
+  const { data: words, isLoading } = useWords(filters, { enabled: !isGallery });
   const { data: collections } = useCollections();
   const { data: tags } = useTags();
   const toggleFavorite = useToggleFavorite();
@@ -351,8 +364,12 @@ export default function VocabularyPage() {
   }
 
   const gallerySearchTerm = gallerySearch.trim();
+  // Only worth fetching once there's an actual term to jump to - an empty
+  // term is never used by goToWordFromGallerySearch, so skip the (otherwise
+  // unfiltered, fetch-everything) request entirely until then.
   const { data: gallerySearchResults } = useWords(
-    gallerySearchTerm ? { search: gallerySearchTerm } : {},
+    { search: gallerySearchTerm },
+    { enabled: isGallery && gallerySearchTerm.length > 0 },
   );
 
   // Auto-jump a moment after the user stops typing (2+ characters), so it doesn't
@@ -748,6 +765,18 @@ export default function VocabularyPage() {
                   No words found. Try adjusting filters or add your first word.
                 </p>
               )}
+            </div>
+          )}
+
+          {!isLoading && words && words.length >= limit && (
+            <div className="flex justify-center pt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLimit((l) => l + PAGE_SIZE)}
+              >
+                Load more
+              </Button>
             </div>
           )}
         </>

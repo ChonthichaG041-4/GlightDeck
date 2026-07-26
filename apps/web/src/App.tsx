@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { SignedIn, SignedOut, RedirectToSignIn, SignIn, SignUp, useAuth } from "@clerk/clerk-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { useAttachAuthToken } from "@/api/client";
@@ -11,11 +11,11 @@ import { useAttachAuthToken } from "@/api/client";
 const HomePage = lazy(() => import("@/pages/HomePage"));
 const ArticlesPage = lazy(() => import("@/pages/ArticlesPage"));
 const ArticleDetailPage = lazy(() => import("@/pages/ArticleDetailPage"));
+const EditArticlePage = lazy(() => import("@/pages/EditArticlePage"));
+const CreatePracticePage = lazy(() => import("@/pages/CreatePracticePage"));
 const VocabularyPage = lazy(() => import("@/pages/VocabularyPage"));
 const FlashcardsPage = lazy(() => import("@/pages/FlashcardsPage"));
-const ListeningPage = lazy(() => import("@/pages/ListeningPage"));
 const ListeningReaderPage = lazy(() => import("@/pages/ListeningReaderPage"));
-const ReadingPage = lazy(() => import("@/pages/ReadingPage"));
 const ArticleReaderPage = lazy(() => import("@/pages/ArticleReaderPage"));
 const QuizPage = lazy(() => import("@/pages/QuizPage"));
 const StatisticsPage = lazy(() => import("@/pages/StatisticsPage"));
@@ -34,6 +34,14 @@ function AuthBridge() {
     useAttachAuthToken(() => getToken());
   }, [getToken]);
   return null;
+}
+
+// Old id-based routes (/articles/:id, /reading/:id, /reading/:id/edit,
+// /listening/:id) redirect here onto their new Article-resource equivalents,
+// so any bookmarked/shared links from before this migration keep working.
+function RedirectWithId({ to }: { to: (id: string) => string }) {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={id ? to(id) : "/articles"} replace />;
 }
 
 function ProtectedShell() {
@@ -61,15 +69,29 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/vocabulary" element={<VocabularyPage />} />
           <Route path="/articles" element={<ArticlesPage />} />
-          <Route path="/articles/:id" element={<ArticleDetailPage />} />
           <Route path="/flashcards" element={<FlashcardsPage />} />
-          <Route path="/listening" element={<ListeningPage />} />
-          <Route path="/listening/:id" element={<ListeningReaderPage />} />
-          <Route path="/reading" element={<ReadingPage />} />
-          <Route path="/reading/:id/edit" element={<ReadingPage />} />
-          <Route path="/reading/:id" element={<ArticleReaderPage />} />
           <Route path="/quiz" element={<QuizPage />} />
           <Route path="/statistics" element={<StatisticsPage />} />
+
+          {/* Create Practice - replaces the old top-level Reading/Listening generator pages */}
+          <Route path="/create" element={<CreatePracticePage />} />
+          <Route path="/article/new" element={<CreatePracticePage />} />
+
+          {/* Article resource - Article is the primary resource; Reading and
+              Listening are just two ways of practicing the same Article. */}
+          <Route path="/article/:id" element={<ArticleDetailPage />} />
+          <Route path="/article/:id/edit" element={<EditArticlePage />} />
+          <Route path="/article/:id/practice/reading" element={<ArticleReaderPage />} />
+          <Route path="/article/:id/practice/listening" element={<ListeningReaderPage />} />
+
+          {/* Legacy redirects */}
+          <Route path="/articles/:id" element={<RedirectWithId to={(id) => `/article/${id}`} />} />
+          <Route path="/reading" element={<Navigate to="/create" replace />} />
+          <Route path="/reading/:id/edit" element={<RedirectWithId to={(id) => `/article/${id}/edit`} />} />
+          <Route path="/reading/:id" element={<RedirectWithId to={(id) => `/article/${id}/practice/reading`} />} />
+          <Route path="/listening" element={<Navigate to="/create" replace />} />
+          <Route path="/listening/:id" element={<RedirectWithId to={(id) => `/article/${id}/practice/listening`} />} />
+
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

@@ -1072,13 +1072,13 @@ export default function ReadingWorkspace({
               <h2 className="text-xl font-bold">{title}</h2>
               <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                 <Button asChild variant="outline" size="sm" className="gap-1.5">
-                  <Link to={`/listening/${articleId}`}>
+                  <Link to={`/article/${articleId}/practice/listening`}>
                     <Headphones className="h-3.5 w-3.5" /> Test Listening
                   </Link>
                 </Button>
                 {!readOnly && (
                   <Button asChild variant="outline" size="sm" className="gap-1.5">
-                    <Link to={`/reading/${articleId}/edit`}>
+                    <Link to={`/article/${articleId}/edit`}>
                       <Pencil className="h-3.5 w-3.5" /> Edit
                     </Link>
                   </Button>

@@ -29,10 +29,13 @@ const wordInput = z.object({
   translations: z.record(z.string(), z.string()).optional(), // { th: "...", ja: "..." }
 });
 
-// GET /api/words?search=&level=&type=&status=&tag=&collectionId=&favorite=
+// GET /api/words?search=&level=&type=&status=&tag=&collectionId=&favorite=&limit=
+// `limit` is opt-in and take-only (no offset/skip) - callers that need the
+// complete matching set (gallery jump-to-word search, ReadingWorkspace's
+// word-matching) simply omit it and get the old unpaginated behavior.
 router.get("/", async (req, res) => {
   const user = getDbUser(req);
-  const { search, level, type, status, tag, collectionId, favorite } = req.query as Record<string, string>;
+  const { search, level, type, status, tag, collectionId, favorite, limit } = req.query as Record<string, string>;
   // collectionId=ALL (or omitted) means "every collection"
 
   const where: any = { userId: user.id };
@@ -50,10 +53,13 @@ router.get("/", async (req, res) => {
   if (favorite === "true") where.favorite = true;
   if (tag) where.tags = { some: { tag: { name: tag } } };
 
+  const take = limit ? Math.min(Math.max(Number(limit) || 0, 1), 500) : undefined;
+
   const words = await prisma.word.findMany({
     where,
     include: { tags: { include: { tag: true } }, collection: true, translations: true },
     orderBy: { createdAt: "desc" },
+    take,
   });
 
   res.json(words.map(serializeWord));

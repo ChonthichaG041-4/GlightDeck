@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 // Community browsing - shared between the Articles hub's "Community" tab and
 // (until Phase 2 removes it) Reading's own "Community" tab. Lists every
 // PUBLIC article regardless of category (Reading- or Listening-created).
-// "Read" opens the shared Article Detail page (/articles/:id), same as My
+// "Read" opens the shared Article Detail page (/article/:id), same as My
 // Articles cards - rating/reading/listening all happen from there.
 //
 // Category/Difficulty/Tags filters live ONLY here (not in My Articles) per
@@ -166,7 +166,7 @@ export default function CommunityTab() {
                 </button>
               </div>
               <Button asChild size="sm" className="mt-1 w-full gap-1.5">
-                <Link to={`/articles/${p.id}`}>
+                <Link to={`/article/${p.id}`}>
                   <BookOpen className="h-3.5 w-3.5" /> Read
                 </Link>
               </Button>

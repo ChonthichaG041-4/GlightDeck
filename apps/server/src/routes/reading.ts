@@ -10,10 +10,11 @@ import { LANG_NAMES } from "../lib/wordLookup";
 import { withGeminiRetry, friendlyGeminiError } from "../lib/gemini";
 import { blocksToPlainText, randomBlockId, type Block } from "../lib/blocks";
 import { callOpenRouterVision, withOpenRouterRetry, friendlyOpenRouterError, extractJsonObject } from "../lib/openrouter";
+import { pregenerateDefaultAudio, generate as generateAudioFile } from "../tts/services/AudioService";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-// Import Book/Reading (OCR): a handful of page photos, each can be a bit larger than a
+// Import ReadingBook (OCR): a handful of page photos, each can be a bit larger than a
 // typical DOCX/PDF upload (phone camera photos), and there can be several pages at once.
 const uploadImages = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024, files: 12 } });
 
@@ -158,6 +159,7 @@ router.post("/articles", async (req, res) => {
   const user = getDbUser(req);
   const data = articleInput.parse(req.body);
   const article = await prisma.article.create({ data: { ...data, userId: user.id } });
+  pregenerateDefaultAudio(article.content); // fire-and-forget - see AudioService
   res.status(201).json(article);
 });
 
@@ -434,7 +436,7 @@ function deriveTitleFromText(text: string): string {
 // Workspace (highlights/notes/bookmarks/progress) and later publishing have
 // something persistent to attach to. Owner-only/PRIVATE by default.
 async function persistGeneratedArticle(userId: string, input: ReadingInput, exercise: any) {
-  return prisma.article.create({
+  const article = await prisma.article.create({
     data: {
       userId,
       title: exercise.title,
@@ -452,6 +454,8 @@ async function persistGeneratedArticle(userId: string, input: ReadingInput, exer
     },
     select: { id: true },
   });
+  pregenerateDefaultAudio(exercise.passage); // fire-and-forget - see AudioService
+  return article;
 }
 
 /**
@@ -634,6 +638,14 @@ function summarizeArticle(article: any, viewerId: string) {
     examMode: article.examMode,
     cefrLevel: article.cefrLevel,
     testMode: article.testMode,
+    // Pre-generated Listening audio (OCR import wizard only, for now - see
+    // /import/book) so ListeningWorkspace can play these back directly.
+    audioUrl: article.audioUrl ?? null,
+    articleAudioUrl: article.articleAudioUrl ?? null,
+    questionsAudioUrl: article.questionsAudioUrl ?? null,
+    choicesAudioUrl: article.choicesAudioUrl ?? null,
+    instructionAudioUrl: article.instructionAudioUrl ?? null,
+    questionAudioUrls: (article.questionAudioUrls as (string | null)[] | null) ?? null,
     visibility: article.visibility,
     status: article.status,
     viewCount: article.viewCount,
@@ -798,6 +810,11 @@ router.patch("/passages/:id", async (req, res) => {
         ...(data.status ? { status: data.status } : data.visibility === "PUBLIC" ? { status: "PUBLISHED" as const } : {}),
       },
     });
+    // Content changed (not just metadata/visibility/status) - the old cached
+    // audio for this article's previous text is now stale (a cache miss on
+    // the new text, harmlessly orphaned on disk), so warm the new text now
+    // rather than waiting for the next Listening play to pay for it.
+    if (content) pregenerateDefaultAudio(content);
     res.json({ id: updated.id, visibility: updated.visibility, status: updated.status });
   } catch (err: any) {
     console.error("Update passage failed:", err?.message ?? err);
@@ -819,6 +836,17 @@ const createPassageInput = z.object({
   vocabularyMode: z.enum(VOCAB_MODES).optional(),
   vocabulary: z.array(vocabularyItemSchema).optional(),
   questions: z.array(z.any()).optional(),
+  // Pre-generated Listening audio from the Import ReadingBook/Image OCR
+  // wizard's "AI is Processing" step (see /import/book) - relative cache
+  // URLs, not absolute, so plain z.string() rather than z.string().url().
+  // Nullable: generateBookImportAudio sends explicit null (not undefined)
+  // when TTS generation failed for that track.
+  audioUrl: z.string().nullable().optional(),
+  articleAudioUrl: z.string().nullable().optional(),
+  questionsAudioUrl: z.string().nullable().optional(),
+  choicesAudioUrl: z.string().nullable().optional(),
+  instructionAudioUrl: z.string().nullable().optional(),
+  questionAudioUrls: z.array(z.string().nullable()).nullable().optional(),
 }).refine((v) => (v.blocks && v.blocks.length > 0) || !!v.content?.trim(), {
   message: "Provide either blocks or content",
 });
@@ -848,8 +876,21 @@ router.post("/passages", async (req, res) => {
         vocabularyJson: data.vocabulary ?? undefined,
         questionsJson: data.questions ?? undefined,
         visibility: "PRIVATE",
+        // Already-generated audio from the OCR import wizard (if any) - see
+        // /import/book. Nothing else sends these today, so this is a no-op
+        // for every other content source.
+        audioUrl: data.audioUrl,
+        articleAudioUrl: data.articleAudioUrl,
+        questionsAudioUrl: data.questionsAudioUrl,
+        choicesAudioUrl: data.choicesAudioUrl,
+        instructionAudioUrl: data.instructionAudioUrl,
+        questionAudioUrls: data.questionAudioUrls ?? undefined,
       },
     });
+    // Only warm the generic cache when the wizard didn't already hand us
+    // ready-made audio for this exact content (OCR import) - otherwise this
+    // would just re-synthesize the same text a second time for nothing.
+    if (!data.articleAudioUrl) pregenerateDefaultAudio(content); // fire-and-forget - see AudioService
     res.status(201).json({ id: article.id });
   } catch (err: any) {
     console.error("Create passage failed:", err?.message ?? err);
@@ -869,7 +910,7 @@ router.post("/passages", async (req, res) => {
 //   - Markdown: `marked`'s lexer gives real structured tokens, so headings,
 //     blockquotes, code fences, and horizontal rules map directly to their
 //     matching block types (the richest of the three imports).
-// "Import Book/Reading" (OCR from test-paper images) is intentionally not
+// "Import ReadingBook" (OCR from test-paper images) is intentionally not
 // implemented yet - a future pass.
 // ---------------------------------------------------------------------------
 
@@ -970,12 +1011,12 @@ router.post("/import/markdown", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Import Book/Reading (OCR) - POST /api/reading/import/book
+// Import ReadingBook (OCR) - POST /api/reading/import/book
 //
 // "Document Structure Parser" pipeline, condensed into a single multimodal
 // vision-language model call instead of a separate OCR + layout + parser
 // stage-by-stage service. Runs on OpenRouter + Qwen2.5-VL (see lib/openrouter.ts)
-// rather than Gemini - a deliberate per-feature choice (Import Book/Reading's
+// rather than Gemini - a deliberate per-feature choice (Import ReadingBook's
 // per-page-image cost adds up fastest of any AI feature here, and a free vision
 // model is a good fit for it specifically). Every other AI feature in this app
 // still runs on Gemini - this is the only route that doesn't. Backs the
@@ -1095,10 +1136,23 @@ const BOOK_IMPORT_USER_PROMPT = `Parse the attached page image(s) as a single re
      question pages, otherwise by matching the count/order of questions); ignore the other blocks.
    - Match answer-key entries to questions strictly by printed question number (answer-key #3 ->
      question #3), not by position on the page.
-   - Always prefer the answer-key's text for a question's "answer" field over what is written on
-     the question page itself, especially when the question page only shows a blank writing line
-     or empty box with no legible handwritten answer - the answer key is the authoritative source
-     of the correct answer in that case.
+   - MOST ANSWER KEYS PRINT A LETTER OR NUMBER, NOT THE FULL ANSWER TEXT (e.g. "1. a  2. c  3. b" -
+     this is by far the most common format for MULTIPLE_CHOICE / TRUE_FALSE / YES_NO_NOTGIVEN
+     answer keys). A bare letter/number is NEVER a valid value for the "answer" field on its own -
+     it is a position reference into THAT SPECIFIC question's own printed choice list on the
+     question page (a/1 = 1st choice, b/2 = 2nd choice, c/3 = 3rd choice, d/4 = 4th choice, using
+     that question's own "options" order, not a fixed alphabet). You must resolve every such letter
+     to the FULL TEXT of the corresponding choice before writing the "answer" field. For example,
+     if question 7's printed choices are "a. True  b. False  c. Not given" and the answer key says
+     "7. b", the answer field must be the exact string "False" (matching one of that question's own
+     "options" entries verbatim) - never "b", never "7", never left blank. Do this letter-to-text
+     resolution for every question type, not just multiple choice. If (and only if) the answer key
+     already spells out the full answer text itself (common for SHORT_ANSWER/FILL_BLANK keys),
+     use that text as-is with no further resolution needed.
+   - Always prefer the (resolved, full-text) answer-key value for a question's "answer" field over
+     what is written on the question page itself, especially when the question page only shows a
+     blank writing line or empty box with no legible handwritten answer - the answer key is the
+     authoritative source of the correct answer in that case.
    - If an answer key explicitly says something like "Other answers with the same context are also
      acceptable" before a numbered list, still use that numbered list as the model "answer" for
      each matching question (it is the expected/reference answer, not a discouraged one).
@@ -1128,6 +1182,90 @@ ${BOOK_IMPORT_JSON_SHAPE}`;
 // other in-flight request too, not just this one). Rejecting oversized
 // combined uploads up front with a clean 400 is much better than risking that.
 const MAX_BOOK_IMPORT_TOTAL_BYTES = 40 * 1024 * 1024; // 40MB combined
+
+const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"];
+
+/** All question prompts, combined into one narration ("Question 1. ..."). */
+function buildQuestionsNarration(questions: any[]): string {
+  return questions
+    .map((q, i) => `Question ${i + 1}. ${q.prompt}`)
+    .join("\n");
+}
+
+/** All answer choices, combined into one narration. Skips MATCHING/ORDERING questions - they don't have flat options. */
+function buildChoicesNarration(questions: any[]): string {
+  return questions
+    .filter((q) => Array.isArray(q.options) && q.options.length > 0)
+    .map((q, i) => {
+      const opts = q.options
+        .map((opt: string, j: number) => `${OPTION_LETTERS[j] ?? j + 1}. ${opt}`)
+        .join(", ");
+      return `Question ${i + 1} choices: ${opts}`;
+    })
+    .join("\n");
+}
+
+/**
+ * Generates and persists (as URLs, in the response - saved onto the Article
+ * row only later, at Save time) the "AI is Processing" step's read-aloud
+ * audio: the article text alone, the instruction alone, the questions alone,
+ * the choices alone, and everything combined into one "read all" track. Uses
+ * the default voice (same assumption as pregenerateDefaultAudio - Article
+ * has no stored language column). Best-effort: a TTS failure here must never
+ * fail the whole import, the learner still gets their extracted text/
+ * questions - it just falls back to on-demand generation in Listening
+ * practice later (per-track, since each Promise here is independent).
+ *
+ * Deliberately does NOT also pregenerate one clip per question here (that
+ * was tried and reverted - see the comment inside the function for why).
+ */
+async function generateBookImportAudio(articleText: string, questions: any[], instructionText: string) {
+  const questionsText = buildQuestionsNarration(questions);
+  const choicesText = buildChoicesNarration(questions);
+  const fullText = [articleText, questionsText, choicesText].filter(Boolean).join("\n\n");
+
+  const result = {
+    audioUrl: null as string | null,
+    articleAudioUrl: null as string | null,
+    questionsAudioUrl: null as string | null,
+    choicesAudioUrl: null as string | null,
+    instructionAudioUrl: null as string | null,
+    // NOT pregenerated here anymore - see the removal note below. Always
+    // null; ListeningWorkspace's "Question / Options" card already handles
+    // that gracefully (falls back to its existing live-generation path,
+    // which the server then caches by content hash on first listen).
+    questionAudioUrls: null as (string | null)[] | null,
+  };
+  try {
+    // Deliberately capped at 5 parallel TTS calls, independent of question
+    // count. An earlier version also fired one extra call per question here
+    // (up to 10+ for a typical exercise) - self-hosted Kokoro is CPU-bound
+    // with no request queue in front of it, so that many concurrent
+    // synthesis jobs thrash the CPU instead of running faster, stretching
+    // "AI is Processing" out past 10 minutes and eventually erroring out.
+    // Per-question "Question / Options" audio is generated on demand in
+    // Listening practice instead (one request, cached after that - see
+    // AudioCache) rather than blocking the whole import on all of them.
+    const [full, article, q, c, instruction] = await Promise.all([
+      generateAudioFile({ text: fullText }),
+      generateAudioFile({ text: articleText }),
+      questionsText ? generateAudioFile({ text: questionsText }) : Promise.resolve(null),
+      choicesText ? generateAudioFile({ text: choicesText }) : Promise.resolve(null),
+      instructionText.trim() ? generateAudioFile({ text: instructionText.trim() }) : Promise.resolve(null),
+    ]);
+    result.audioUrl = full.url;
+    result.articleAudioUrl = article.url;
+    result.questionsAudioUrl = q?.url ?? null;
+    result.choicesAudioUrl = c?.url ?? null;
+    result.instructionAudioUrl = instruction?.url ?? null;
+  } catch (err: any) {
+    console.error(
+      "Book import (OCR): audio generation failed (non-fatal - import still succeeds, Listening will synthesize on demand instead):",
+      err?.message ?? err
+    );
+  }
+  return result;
+}
 
 router.post("/import/book", uploadImages.array("images", 12), async (req, res) => {
   try {
@@ -1202,6 +1340,20 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
         return question;
       });
 
+    const content = blocksToPlainText(blocks);
+    // Same fallback text ListeningWorkspace's instructionText() uses client-
+    // side when Article.description is empty - keeping them identical means
+    // the pregenerated instruction/questionAudioUrls clips always match what
+    // a live on-demand generation would have said for the same article.
+    const instructionText = (parsed?.instruction ? String(parsed.instruction).trim() : "") ||
+      "Listen carefully, then answer the questions based on what you heard.";
+    // "AI is Processing Your Document" also generates the read-aloud audio
+    // right here (combined + article/questions/choices/instruction, plus one
+    // per-question "instruction + prompt + choices" clip), so it's ready to
+    // store as soon as the wizard's Save step persists the Article - see
+    // generateBookImportAudio's doc comment for why this is best-effort.
+    const audio = await generateBookImportAudio(content, questions, instructionText);
+
     res.json({
       title: (String(parsed?.title ?? "").trim() || deriveTitleFromParagraphs(paragraphs)),
       level: parsed?.level ? String(parsed.level).trim() : null,
@@ -1209,8 +1361,9 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
       confidence: Number.isFinite(parsed?.confidence) ? Math.min(100, Math.max(0, Math.round(parsed.confidence))) : null,
       pagesProcessed: files.length,
       blocks,
-      content: blocksToPlainText(blocks),
+      content,
       questions,
+      ...audio,
     });
   } catch (err: any) {
     console.error("Book import (OCR) failed:", err?.message ?? err);
@@ -1262,6 +1415,9 @@ const highlightInput = z.object({
   startOffset: z.number().int().min(0),
   endOffset: z.number().int().min(0),
   color: z.string().optional(),
+  // Set only for Listening's Guided-mode question/options highlights; left
+  // undefined (-> null) for ordinary Reading-passage highlights.
+  questionIndex: z.number().int().min(0).nullable().optional(),
 });
 
 router.post("/passages/:id/highlights", async (req, res) => {

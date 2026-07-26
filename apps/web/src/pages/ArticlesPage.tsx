@@ -84,14 +84,14 @@ function AddArticleSplitButton({ onPasteText }: { onPasteText: () => void }) {
               <FileText className="h-4 w-4" /> Paste Text
             </button>
             <Link
-              to="/reading?tab=generate"
+              to="/create?tab=generate"
               onClick={() => setOpen(false)}
               className="flex items-center gap-2 px-3 py-2 hover:bg-accent"
             >
               <Sparkles className="h-4 w-4" /> Generate with AI
             </Link>
             <Link
-              to="/reading?tab=create"
+              to="/create?tab=create"
               onClick={() => setOpen(false)}
               className="flex items-center gap-2 px-3 py-2 hover:bg-accent"
             >

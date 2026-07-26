@@ -5,6 +5,7 @@ import { prisma } from "../db";
 import { getDbUser } from "../middleware/auth";
 import { LANG_NAMES } from "../lib/wordLookup";
 import { withGeminiRetry, friendlyGeminiError } from "../lib/gemini";
+import { generate as generateAudio } from "../tts/services/AudioService";
 
 const router = Router();
 
@@ -337,6 +338,40 @@ router.post("/generate-exercise", async (req, res) => {
       source: "offline",
       exercise: null,
       note: friendlyGeminiError(err, "สร้างบทฟังด้วย Gemini"),
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/listening/audio - { text, language, accent?, gender?, speed? }
+// Generates (or reuses a cached) MP3 for the given text and returns a URL
+// under /audio-cache. Powers every audio surface in Listening (Workspace
+// playback, per-question "listen" buttons, Preview) - see AudioService for
+// the actual provider dispatch (Kokoro for English, Edge Neural TTS for
+// everything else). No paid TTS API involved anywhere in this pipeline.
+// ---------------------------------------------------------------------------
+
+const generateAudioInput = z.object({
+  text: z.string().min(1),
+  language: z.string().optional(),
+  accent: z.enum(["AMERICAN", "BRITISH"]).optional(),
+  gender: z.enum(["FEMALE", "MALE"]).optional(),
+  speed: z.number().optional(),
+});
+
+router.post("/audio", async (req, res) => {
+  try {
+    const input = generateAudioInput.parse(req.body);
+    const result = await generateAudio(input);
+    res.json(result);
+  } catch (err: any) {
+    console.error("TTS /audio failed:", err?.message ?? err);
+    if (err?.stack) console.error(err.stack);
+    if (err?.name === "ZodError") {
+      return res.status(400).json({ error: "ข้อมูลที่ส่งมาไม่ถูกต้อง (validation error)" });
+    }
+    res.status(500).json({
+      error: "สร้างเสียงไม่สำเร็จ กรุณาลองใหม่อีกครั้ง (ดู log ฝั่งเซิร์ฟเวอร์สำหรับรายละเอียด)",
     });
   }
 });

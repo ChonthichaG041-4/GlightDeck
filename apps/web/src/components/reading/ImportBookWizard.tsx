@@ -1,4 +1,4 @@
-// Import Book/Reading (OCR): a guided 5-step wizard, opened from the Content
+// Import ReadingBook (OCR): a guided 5-step wizard, opened from the Content
 // Source card in CreateModeTab instead of an inline "coming soon" panel.
 //
 //   1. Upload         - drag & drop / browse one or more page photos.
@@ -13,14 +13,14 @@
 // This is a fully self-contained creation flow - it creates its OWN passage via
 // useCreatePassage rather than feeding into whatever the surrounding Create Mode
 // composer currently has loaded, so importing a book never clobbers an
-// in-progress manual draft. "Save & Open" jumps straight into the same
-// ReadingWorkspace every other passage uses (GET /reading/passages/:id via the
-// existing /reading/:id route), so the imported exercise is immediately usable.
+// in-progress manual draft. "Save & Open" jumps straight into Article Detail
+// (GET /reading/passages/:id via the existing /article/:id route), so the
+// imported exercise is immediately usable.
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   UploadCloud, ImagePlus, RotateCw, Trash2, ArrowUp, ArrowDown, Loader2,
-  CheckCircle2, Circle, Plus, X, ChevronRight, ChevronLeft, FileImage,
+  CheckCircle2, Circle, Plus, X, ChevronRight, ChevronLeft, FileImage, Volume2, AlertTriangle,
 } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import QuestionBuilder from "./QuestionBuilder";
 import { useImportBook, useCreatePassage, useUpdatePassage, type ImportedBookDocument, type ReadingQuestion } from "@/api/hooks";
+import { getServerOrigin } from "@/api/client";
 
 type Step = "upload" | "review-pages" | "processing" | "review-results" | "save";
 
@@ -56,6 +57,7 @@ const PROCESSING_PHASES = [
   "Finding questions and answer areas...",
   "Identifying question types...",
   "Building a structured reading exercise...",
+  "Generating read-aloud audio...",
   "Preparing everything for your review...",
 ];
 
@@ -242,13 +244,26 @@ export default function ImportBookWizard({
         cefrLevel: level.trim() || undefined,
         testMode: questions.length ? "QUESTIONS" : "READING_ONLY",
         questions,
+        // Audio already generated back in the AI Processing step - carry it
+        // over so Listening practice doesn't need to synthesize it again.
+        // (Same caveat as the article/questions/choices tracks above: if the
+        // learner edits the instruction/paragraphs/questions text below
+        // before saving, these clips still reflect what was extracted, not
+        // the edit - Listening simply falls back to live generation for
+        // whichever specific piece no longer matches.)
+        audioUrl: result?.audioUrl,
+        articleAudioUrl: result?.articleAudioUrl,
+        questionsAudioUrl: result?.questionsAudioUrl,
+        choicesAudioUrl: result?.choicesAudioUrl,
+        instructionAudioUrl: result?.instructionAudioUrl,
+        questionAudioUrls: result?.questionAudioUrls,
       });
       if (visibility !== "PRIVATE") {
         await updatePassage.mutateAsync({ id: created.id, visibility });
       }
       if (openAfter) {
         handleClose();
-        navigate(`/reading/${created.id}`);
+        navigate(`/article/${created.id}`);
       } else {
         onSaved?.(created.id, title.trim());
         handleClose();
@@ -312,6 +327,13 @@ export default function ImportBookWizard({
           <SaveStep
             pagesProcessed={result?.pagesProcessed ?? pages.length}
             questionsCount={questions.length}
+            audio={{
+              audioUrl: result?.audioUrl,
+              articleAudioUrl: result?.articleAudioUrl,
+              questionsAudioUrl: result?.questionsAudioUrl,
+              choicesAudioUrl: result?.choicesAudioUrl,
+              instructionAudioUrl: result?.instructionAudioUrl,
+            }}
             collection={collection} setCollection={setCollection}
             tags={tags} setTags={setTags} tagDraft={tagDraft} setTagDraft={setTagDraft} onAddTag={addTag}
             visibility={visibility} setVisibility={setVisibility}
@@ -630,9 +652,17 @@ function Stat({ label, value }: { label: string; value: string }) {
 // ---------------------------------------------------------------------------
 // Step 5 - Save Exercise
 // ---------------------------------------------------------------------------
+interface SaveStepAudio {
+  audioUrl?: string | null;
+  articleAudioUrl?: string | null;
+  questionsAudioUrl?: string | null;
+  choicesAudioUrl?: string | null;
+  instructionAudioUrl?: string | null;
+}
+
 function SaveStep({
   pagesProcessed, questionsCount, collection, setCollection, tags, setTags, tagDraft, setTagDraft, onAddTag,
-  visibility, setVisibility, saveError, isSaving, onBack, onSave, onSaveAndOpen,
+  visibility, setVisibility, saveError, isSaving, onBack, onSave, onSaveAndOpen, audio,
 }: {
   pagesProcessed: number;
   questionsCount: number;
@@ -645,6 +675,7 @@ function SaveStep({
   onBack: () => void;
   onSave: () => void;
   onSaveAndOpen: () => void;
+  audio: SaveStepAudio;
 }) {
   const visibilityOptions: { value: "PRIVATE" | "UNLISTED" | "PUBLIC"; label: string }[] = [
     { value: "PRIVATE", label: "Private" },
@@ -710,12 +741,84 @@ function SaveStep({
         <p className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Structured Successfully</p>
       </div>
 
+      <AudioPreview audio={audio} />
+
       {saveError && <p className="text-sm text-destructive">{saveError}</p>}
 
       <div className="flex gap-2">
         <Button variant="outline" className="gap-1.5" onClick={onBack} disabled={isSaving}><ChevronLeft className="h-4 w-4" /> Back</Button>
         <Button variant="outline" className="flex-1" onClick={onSave} disabled={isSaving}>{isSaving ? "Saving..." : "Save"}</Button>
         <Button className="flex-1" onClick={onSaveAndOpen} disabled={isSaving}>{isSaving ? "Saving..." : "Save & Open"}</Button>
+      </div>
+    </div>
+  );
+}
+
+// Lets the learner sanity-check the read-aloud audio generated back in the
+// AI Processing step (see generateBookImportAudio server-side) before saving -
+// otherwise the first time anyone would hear it is deep inside a Listening
+// practice session, too late to notice a bad take.
+const AUDIO_PREVIEW_TRACKS: { key: keyof SaveStepAudio; label: string }[] = [
+  { key: "audioUrl", label: "ฟังทั้งหมด" },
+  { key: "articleAudioUrl", label: "บทความ" },
+  { key: "instructionAudioUrl", label: "คำสั่ง" },
+  { key: "questionsAudioUrl", label: "คำถาม" },
+  { key: "choicesAudioUrl", label: "ตัวเลือก" },
+];
+
+function AudioPreview({ audio }: { audio: SaveStepAudio }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playingKey, setPlayingKey] = useState<string | null>(null);
+
+  const tracks = AUDIO_PREVIEW_TRACKS.filter((t) => !!audio[t.key]);
+  if (!tracks.length) {
+    return (
+      <div className="flex items-start gap-1.5 rounded-lg border bg-amber-50 p-3 text-xs text-amber-700">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 translate-y-0.5" />
+        <span>สร้างเสียงอ่านไม่สำเร็จตอนประมวลผล - ระบบจะสร้างเสียงให้อัตโนมัติตอนทดสอบฟังแทน (ช้ากว่าเล็กน้อยในครั้งแรก)</span>
+      </div>
+    );
+  }
+
+  function play(key: string, url: string) {
+    const el = audioRef.current;
+    if (!el) return;
+    if (playingKey === key && !el.paused) {
+      el.pause();
+      return;
+    }
+    el.src = `${getServerOrigin()}${url}`;
+    el.play();
+    setPlayingKey(key);
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-lg border p-3">
+      <audio
+        ref={audioRef}
+        className="hidden"
+        onEnded={() => setPlayingKey(null)}
+        onPause={() => setPlayingKey((k) => (audioRef.current?.ended ? null : k))}
+      />
+      <Label className="text-xs">ตรวจสอบเสียงที่สร้างไว้</Label>
+      <div className="flex flex-wrap gap-1.5">
+        {tracks.map((t) => {
+          const url = audio[t.key]!;
+          const isPlaying = playingKey === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => play(t.key, url)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                isPlaying ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent"
+              )}
+            >
+              <Volume2 className="h-3.5 w-3.5" /> {t.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

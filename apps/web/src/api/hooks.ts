@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import type {
   Word, Collection, Tag, Article, SentenceBookmark, Achievement, HomeSummary, StatsSummary, Rating,
@@ -18,6 +18,10 @@ export function useWords(filters: Record<string, string | undefined> = {}, opts?
     queryKey: ["words", filters],
     queryFn: async () => (await api.get<Word[]>("/words", { params: filters })).data,
     enabled: opts?.enabled ?? true,
+    // Keep showing the previous filter's words while the new filter's request
+    // is in flight, instead of flashing a blank "Loading..." on every filter
+    // change / keystroke / "Load more" click.
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -253,6 +257,34 @@ export function useGenerateListeningExercise() {
   });
 }
 
+// ---------- Listening audio (server-generated TTS - Kokoro for English, Edge Neural TTS for everything else) ----------
+export interface GenerateAudioParams {
+  text: string;
+  language?: string;
+  /** English only - ignored otherwise. */
+  accent?: "AMERICAN" | "BRITISH";
+  /** English only - ignored otherwise. */
+  gender?: "FEMALE" | "MALE";
+  /** One of 0.8/0.9/1.0/1.1/1.2 - see lib/ttsLanguages.ts's ALLOWED_SPEEDS. */
+  speed?: number;
+}
+
+export interface GenerateAudioResult {
+  /** Relative path (e.g. "/audio-cache/<hash>.mp3") - prepend getServerOrigin() from api/client.ts before using as an <audio src>. */
+  url: string;
+  cached: boolean;
+  provider: "kokoro" | "edge";
+  language: string;
+  speed: number;
+}
+
+export function useGenerateAudio() {
+  return useMutation({
+    mutationFn: async (params: GenerateAudioParams) =>
+      (await api.post<GenerateAudioResult>("/listening/audio", params)).data,
+  });
+}
+
 // ---------- Reading ----------
 // My Articles filter: deliberately no "category" here in the new Articles-hub
 // UI (Category is Community-only) - Study Lists/Tags/status/search/sort are
@@ -406,7 +438,7 @@ export interface ReadingQuestion {
   // manually via the Create Mode Question Builder (not AI-generated).
   pairs?: { left: string; right: string }[]; // MATCHING
   items?: string[]; // ORDERING - listed here in the correct order
-  // Educational Analysis tag (Import Book/Reading only, for now) - a CEFR
+  // Educational Analysis tag (Import ReadingBook only, for now) - a CEFR
   // difficulty estimate kept separate from the structural fields above.
   difficulty?: string;
 }
@@ -475,6 +507,9 @@ export interface HighlightItem {
   startOffset: number;
   endOffset: number;
   color: string;
+  // Set only for Listening's Guided-mode question/options highlights; null/
+  // undefined for ordinary Reading-passage highlights.
+  questionIndex?: number | null;
   createdAt: string;
 }
 
@@ -531,6 +566,13 @@ export interface PassageDetail {
   examMode?: string | null;
   cefrLevel?: string | null;
   testMode?: string | null;
+  // Pre-generated Listening audio (OCR import wizard only, for now).
+  audioUrl?: string | null;
+  articleAudioUrl?: string | null;
+  questionsAudioUrl?: string | null;
+  choicesAudioUrl?: string | null;
+  instructionAudioUrl?: string | null;
+  questionAudioUrls?: (string | null)[] | null;
   visibility: "PRIVATE" | "PUBLIC" | "UNLISTED";
   status?: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   viewCount: number;
@@ -597,6 +639,14 @@ export interface CreatePassagePayload {
   vocabularyMode?: "AUTO" | "MANUAL" | "NONE";
   vocabulary?: VocabularyItem[];
   questions?: ReadingQuestion[];
+  // Already-generated audio to carry over (currently only the OCR import
+  // wizard produces these - see ImportedBookDocument).
+  audioUrl?: string | null;
+  articleAudioUrl?: string | null;
+  questionsAudioUrl?: string | null;
+  choicesAudioUrl?: string | null;
+  instructionAudioUrl?: string | null;
+  questionAudioUrls?: (string | null)[] | null;
 }
 
 export function useCreatePassage() {
@@ -650,8 +700,17 @@ export function useCommunityPassages(filter: CommunityFilter = {}) {
 export function useCreateHighlight() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ articleId, ...payload }: { articleId: string; text: string; startOffset: number; endOffset: number; color?: string }) =>
-      (await api.post<HighlightItem>(`/reading/passages/${articleId}/highlights`, payload)).data,
+    mutationFn: async ({
+      articleId,
+      ...payload
+    }: {
+      articleId: string;
+      text: string;
+      startOffset: number;
+      endOffset: number;
+      color?: string;
+      questionIndex?: number;
+    }) => (await api.post<HighlightItem>(`/reading/passages/${articleId}/highlights`, payload)).data,
     onMutate: async ({ articleId, ...payload }) => {
       await qc.cancelQueries({ queryKey: ["passage", articleId] });
       const previous = qc.getQueryData<PassageDetail>(["passage", articleId]);
@@ -662,6 +721,7 @@ export function useCreateHighlight() {
           startOffset: payload.startOffset,
           endOffset: payload.endOffset,
           color: payload.color ?? "#fde68a",
+          questionIndex: payload.questionIndex ?? null,
           createdAt: new Date().toISOString(),
         };
         qc.setQueryData<PassageDetail>(["passage", articleId], { ...previous, highlights: [...previous.highlights, optimistic] });
@@ -826,7 +886,7 @@ export function useImportMarkdown() {
   });
 }
 
-// Import Book/Reading (OCR): one or more page photos of a book/exam page,
+// Import ReadingBook (OCR): one or more page photos of a book/exam page,
 // merged server-side into one passage + question set via Gemini vision.
 // Backs the multi-step Import Wizard (see ImportBookWizard.tsx).
 export interface ImportedBookDocument extends ImportedDocument {
@@ -835,6 +895,16 @@ export interface ImportedBookDocument extends ImportedDocument {
   confidence?: number | null;
   pagesProcessed: number;
   questions: ReadingQuestion[];
+  // Read-aloud audio generated server-side during "AI is Processing" - see
+  // POST /reading/import/book. Null if TTS generation failed (non-fatal -
+  // the rest of the import still succeeds); carry these through to Save so
+  // they get persisted on the Article instead of regenerated later.
+  audioUrl?: string | null;
+  articleAudioUrl?: string | null;
+  questionsAudioUrl?: string | null;
+  choicesAudioUrl?: string | null;
+  instructionAudioUrl?: string | null;
+  questionAudioUrls?: (string | null)[] | null;
 }
 
 export function useImportBook() {
