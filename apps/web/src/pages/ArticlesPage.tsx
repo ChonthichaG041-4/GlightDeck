@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { ChevronDown, FileText, Plus, Sparkles, Wand2 } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { ChevronDown, FileText, Plus, Sparkles } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ArticleLibrary, AddArticleDialog } from "@/components/articles/ArticleLibrary";
@@ -18,14 +18,22 @@ type ArticlesTab = "library" | "community";
 const VALID_TABS: ArticlesTab[] = ["library", "community"];
 
 export default function ArticlesPage() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const tabParam = searchParams.get("tab") as ArticlesTab | null;
   const [tab, setTab] = useState<ArticlesTab>(tabParam && VALID_TABS.includes(tabParam) ? tabParam : "library");
   const [addOpen, setAddOpen] = useState(false);
 
+  // "Add Article" / "Add New Article" both default to Create Practice's
+  // Create Manually tab - Paste Text and Generate with AI remain reachable
+  // from the split button's dropdown for people who want those instead.
+  function goToCreateManually() {
+    navigate("/create?tab=create");
+  }
+
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <div className="flex flex-col gap-4 rounded-2xl border bg-card p-5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-start gap-4">
           {/* <ArticlesIllustration className="hidden h-16 w-16 shrink-0 sm:block" /> */}
           <div>
@@ -35,7 +43,7 @@ export default function ArticlesPage() {
             </p>
           </div>
         </div>
-        <AddArticleSplitButton onPasteText={() => setAddOpen(true)} />
+        <AddArticleSplitButton onAddArticle={goToCreateManually} onPasteText={() => setAddOpen(true)} />
       </div>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as ArticlesTab)}>
@@ -45,7 +53,7 @@ export default function ArticlesPage() {
         </TabsList>
       </Tabs>
 
-      {tab === "library" && <ArticleLibrary onRequestAdd={() => setAddOpen(true)} />}
+      {tab === "library" && <ArticleLibrary onRequestAdd={goToCreateManually} />}
       {tab === "community" && <CommunityTab />}
 
       <AddArticleDialog open={addOpen} onOpenChange={setAddOpen} />
@@ -53,13 +61,13 @@ export default function ArticlesPage() {
   );
 }
 
-function AddArticleSplitButton({ onPasteText }: { onPasteText: () => void }) {
+function AddArticleSplitButton({ onAddArticle, onPasteText }: { onAddArticle: () => void; onPasteText: () => void }) {
   const [open, setOpen] = useState(false);
 
   return (
     <div className="relative shrink-0">
       <div className="flex overflow-hidden rounded-lg">
-        <Button className="gap-2 rounded-r-none" onClick={onPasteText}>
+        <Button className="gap-2 rounded-r-none" onClick={onAddArticle}>
           <Plus className="h-4 w-4" /> Add Article
         </Button>
         <button
@@ -89,13 +97,6 @@ function AddArticleSplitButton({ onPasteText }: { onPasteText: () => void }) {
               className="flex items-center gap-2 px-3 py-2 hover:bg-accent"
             >
               <Sparkles className="h-4 w-4" /> Generate with AI
-            </Link>
-            <Link
-              to="/create?tab=create"
-              onClick={() => setOpen(false)}
-              className="flex items-center gap-2 px-3 py-2 hover:bg-accent"
-            >
-              <Wand2 className="h-4 w-4" /> Create / Import
             </Link>
           </div>
         </>

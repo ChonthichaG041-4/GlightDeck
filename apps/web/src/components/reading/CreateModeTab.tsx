@@ -206,11 +206,11 @@ export default function CreateModeTab({ editArticleId }: { editArticleId?: strin
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
-      <div className="space-y-1.5">
+    <div className="space-y-5">
+      {/* <div className="space-y-1.5">
         <h2 className="text-lg font-semibold">{editArticleId ? "Edit your reading passage" : "Create your own reading passage"}</h2>
         <p className="text-sm text-muted-foreground">เขียนบทความของคุณเอง ใช้ AI ช่วยแก้ไข แล้วเผยแพร่ให้คนอื่นอ่านได้</p>
-      </div>
+      </div> */}
 
       {savedId && saved && (
         <VisibilityCard
@@ -351,7 +351,12 @@ export default function CreateModeTab({ editArticleId }: { editArticleId?: strin
         </Button>
         <Button
           className="flex-1 gap-2"
-          onClick={() => save((id) => navigate(`/article/${id}`))}
+          onClick={() => {
+            // Finishing an edit (opened via /article/:id/edit) goes back to
+            // the Articles hub; finishing a brand-new draft goes to its
+            // Article Detail page so the user can start Reading/Listening.
+            save((id) => navigate(editArticleId ? "/articles" : `/article/${id}`));
+          }}
           disabled={isSaving}
         >
           <Save className="h-4 w-4" /> {isSaving ? "Saving..." : savedId ? "Save Changes" : "Save Draft"}

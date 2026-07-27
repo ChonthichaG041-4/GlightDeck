@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import QuestionBuilder from "./QuestionBuilder";
 import { useImportBook, useCreatePassage, useUpdatePassage, type ImportedBookDocument, type ReadingQuestion } from "@/api/hooks";
 import { getServerOrigin } from "@/api/client";
+import { playSuccessChime } from "@/lib/notificationSound";
 
 type Step = "upload" | "review-pages" | "processing" | "review-results" | "save";
 
@@ -48,17 +49,31 @@ interface PageItem {
   rotation: 0 | 90 | 180 | 270;
 }
 
-const PROCESSING_PHASES = [
-  "Uploading pages...",
-  "Enhancing image quality...",
-  "Reading text from images...",
-  "Understanding document layout...",
-  "Extracting the reading passage...",
-  "Finding questions and answer areas...",
-  "Identifying question types...",
-  "Building a structured reading exercise...",
-  "Generating read-aloud audio...",
-  "Preparing everything for your review...",
+// The real import is a single request/response (one Gemini call), so these
+// phases are a simulated progression rather than live backend signals. The
+// timer advances one phase every tick until it reaches the second-to-last
+// phase, then parks there until the real response comes back - which is often
+// the longest wait, so that phase gets its own rotating sub-messages (driven
+// by `subIndex`) instead of sitting on one static line the whole time.
+const PROCESSING_PHASES: { label: string; ongoing?: string[] }[] = [
+  { label: "Uploading pages..." },
+  { label: "Enhancing image quality..." },
+  { label: "Reading text from images..." },
+  { label: "Understanding document layout..." },
+  { label: "Extracting the reading passage..." },
+  { label: "Finding questions and answer areas..." },
+  { label: "Identifying question types..." },
+  { label: "Building a structured reading exercise..." },
+  {
+    label: "Generating read-aloud audio...",
+    ongoing: [
+      "Generating read-aloud audio... narrating the passage",
+      "Generating read-aloud audio... narrating the instructions",
+      "Generating read-aloud audio... narrating the questions and choices",
+      "Generating read-aloud audio... finalizing the audio files",
+    ],
+  },
+  { label: "Preparing everything for your review..." },
 ];
 
 const QUESTION_TYPE_LABELS: Record<string, string> = {
@@ -90,6 +105,7 @@ export default function ImportBookWizard({
   const [step, setStep] = useState<Step>("upload");
   const [pages, setPages] = useState<PageItem[]>([]);
   const [phaseIndex, setPhaseIndex] = useState(0);
+  const [subIndex, setSubIndex] = useState(0);
   const [processError, setProcessError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportedBookDocument | null>(null);
 
@@ -119,6 +135,7 @@ export default function ImportBookWizard({
     setStep("upload");
     setPages([]);
     setPhaseIndex(0);
+    setSubIndex(0);
     setProcessError(null);
     setResult(null);
     setTitle(""); setLevel(""); setInstruction(""); setParagraphs([]); setQuestions([]);
@@ -183,10 +200,12 @@ export default function ImportBookWizard({
   async function startProcessing() {
     setStep("processing");
     setPhaseIndex(0);
+    setSubIndex(0);
     setProcessError(null);
 
     const timer = setInterval(() => {
       setPhaseIndex((i) => (i < PROCESSING_PHASES.length - 2 ? i + 1 : i));
+      setSubIndex((s) => s + 1);
     }, 1800);
 
     try {
@@ -194,6 +213,7 @@ export default function ImportBookWizard({
       const data = await importBook.mutateAsync(orderedFiles);
       clearInterval(timer);
       setPhaseIndex(PROCESSING_PHASES.length - 1);
+      playSuccessChime();
       setResult(data);
       setTitle(data.title);
       setLevel(data.level ?? "");
@@ -307,7 +327,7 @@ export default function ImportBookWizard({
           />
         )}
 
-        {step === "processing" && <ProcessingStep phaseIndex={phaseIndex} />}
+        {step === "processing" && <ProcessingStep phaseIndex={phaseIndex} subIndex={subIndex} />}
 
         {step === "review-results" && (
           <ReviewResultsStep
@@ -527,7 +547,7 @@ function ReviewPagesStep({
 // ---------------------------------------------------------------------------
 // Step 3 - AI Processing
 // ---------------------------------------------------------------------------
-function ProcessingStep({ phaseIndex }: { phaseIndex: number }) {
+function ProcessingStep({ phaseIndex, subIndex }: { phaseIndex: number; subIndex: number }) {
   return (
     <div className="space-y-4 py-2">
       <div className="text-center">
@@ -537,18 +557,22 @@ function ProcessingStep({ phaseIndex }: { phaseIndex: number }) {
       </div>
 
       <div className="space-y-2 rounded-lg border p-3">
-        {PROCESSING_PHASES.map((phase, i) => (
-          <div key={phase} className={cn("flex items-center gap-2 text-sm", i > phaseIndex && "text-muted-foreground")}>
-            {i < phaseIndex ? (
-              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-            ) : i === phaseIndex ? (
-              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
-            ) : (
-              <Circle className="h-4 w-4 shrink-0 text-muted-foreground/40" />
-            )}
-            <span className={i === phaseIndex ? "font-medium" : ""}>{phase}</span>
-          </div>
-        ))}
+        {PROCESSING_PHASES.map((phase, i) => {
+          const isActive = i === phaseIndex;
+          const text = isActive && phase.ongoing?.length ? phase.ongoing[subIndex % phase.ongoing.length] : phase.label;
+          return (
+            <div key={phase.label} className={cn("flex items-center gap-2 text-sm", i > phaseIndex && "text-muted-foreground")}>
+              {i < phaseIndex ? (
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+              ) : isActive ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+              ) : (
+                <Circle className="h-4 w-4 shrink-0 text-muted-foreground/40" />
+              )}
+              <span className={isActive ? "font-medium" : ""}>{text}</span>
+            </div>
+          );
+        })}
       </div>
 
       <p className="text-center text-xs text-muted-foreground">This usually takes less than a minute.</p>
