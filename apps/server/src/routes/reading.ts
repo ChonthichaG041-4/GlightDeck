@@ -1259,15 +1259,40 @@ function buildChoicesNarration(questions: any[]): string {
     .join("\n");
 }
 
+// Bounds how long the "AI is Processing" step's audio pregeneration is
+// allowed to add to the /import/book request. This is on top of an already
+// slow-ish request (the OCR vision call, plus - on Render/Railway's free
+// tier - up to 30-60s if the service had spun down from being idle, per
+// DEPLOY_BACKEND.md), and self-hosted Kokoro TTS is CPU-bound with no queue,
+// so it can be meaningfully slower on a shared/free-tier CPU than it is
+// locally. Racing against this timeout means a slow (not just a failed) TTS
+// pass degrades the same way a failed one already did - falls back to nulls,
+// Listening synthesizes on demand later - instead of holding the whole HTTP
+// response open long enough to trip a reverse-proxy/gateway timeout, which
+// surfaces to the learner as an unhelpful generic "import failed" with no
+// detail (the connection gets killed before our own try/catch ever runs).
+const BOOK_IMPORT_AUDIO_TIMEOUT_MS = 12_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 /**
  * Generates and persists (as URLs, in the response - saved onto the Article
  * row only later, at Save time) the "AI is Processing" step's read-aloud
  * audio: the article text alone, the instruction alone, the questions alone,
  * the choices alone, and everything combined into one "read all" track. Uses
  * the default voice (same assumption as pregenerateDefaultAudio - Article
- * has no stored language column). Best-effort: a TTS failure here must never
- * fail the whole import, the learner still gets their extracted text/
- * questions - it just falls back to on-demand generation in Listening
+ * has no stored language column). Best-effort: a TTS failure OR a TTS that's
+ * simply taking too long must never fail (or meaningfully slow down) the
+ * whole import - the learner still gets their extracted text/questions
+ * either way, it just falls back to on-demand generation in Listening
  * practice later (per-track, since each Promise here is independent).
  *
  * Deliberately does NOT also pregenerate one clip per question here (that
@@ -1300,13 +1325,17 @@ async function generateBookImportAudio(articleText: string, questions: any[], in
     // Per-question "Question / Options" audio is generated on demand in
     // Listening practice instead (one request, cached after that - see
     // AudioCache) rather than blocking the whole import on all of them.
-    const [full, article, q, c, instruction] = await Promise.all([
-      generateAudioFile({ text: fullText }),
-      generateAudioFile({ text: articleText }),
-      questionsText ? generateAudioFile({ text: questionsText }) : Promise.resolve(null),
-      choicesText ? generateAudioFile({ text: choicesText }) : Promise.resolve(null),
-      instructionText.trim() ? generateAudioFile({ text: instructionText.trim() }) : Promise.resolve(null),
-    ]);
+    const [full, article, q, c, instruction] = await withTimeout(
+      Promise.all([
+        generateAudioFile({ text: fullText }),
+        generateAudioFile({ text: articleText }),
+        questionsText ? generateAudioFile({ text: questionsText }) : Promise.resolve(null),
+        choicesText ? generateAudioFile({ text: choicesText }) : Promise.resolve(null),
+        instructionText.trim() ? generateAudioFile({ text: instructionText.trim() }) : Promise.resolve(null),
+      ]),
+      BOOK_IMPORT_AUDIO_TIMEOUT_MS,
+      "Book import (OCR) audio pregeneration"
+    );
     result.audioUrl = full.url;
     result.articleAudioUrl = article.url;
     result.questionsAudioUrl = q?.url ?? null;
@@ -1314,7 +1343,7 @@ async function generateBookImportAudio(articleText: string, questions: any[], in
     result.instructionAudioUrl = instruction?.url ?? null;
   } catch (err: any) {
     console.error(
-      "Book import (OCR): audio generation failed (non-fatal - import still succeeds, Listening will synthesize on demand instead):",
+      "Book import (OCR): audio generation failed or was too slow (non-fatal - import still succeeds, Listening will synthesize on demand instead):",
       err?.message ?? err
     );
   }
