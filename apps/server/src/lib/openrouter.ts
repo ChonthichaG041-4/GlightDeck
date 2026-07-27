@@ -50,9 +50,10 @@ function errorText(err: any): string {
 export function isOpenRouterOverloaded(err: any): boolean {
   const text = errorText(err);
   return (
+    err?.status === 500 ||
     err?.status === 502 ||
     err?.status === 503 ||
-    /overloaded|no.*provider.*available|temporarily unavailable/i.test(text)
+    /overloaded|no.*provider.*available|temporarily unavailable|internal server error/i.test(text)
   );
 }
 
