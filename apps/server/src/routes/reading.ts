@@ -171,16 +171,39 @@ router.delete("/articles/:id", async (req, res) => {
   res.status(204).end();
 });
 
-// POST /api/reading/mark-read/:id -> counts toward today's "Reading" stat
+// POST /api/reading/mark-read/:id -> counts toward today's "Reading" stat.
+// Fires once per ArticleReaderPage mount with no other guard, so the same
+// article being reopened a few times (or React StrictMode's dev
+// double-invoke of that effect) used to inflate articlesRead well past the
+// learner's real number of distinct articles - see ArticleReadLog. Only the
+// first call for a given (user, article, day) actually increments; repeats
+// are silent no-ops.
 router.post("/mark-read/:id", async (req, res) => {
   const user = getDbUser(req);
+  const articleId = req.params.id;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  await prisma.dailyProgress.upsert({
-    where: { userId_date: { userId: user.id, date: today } },
-    update: { articlesRead: { increment: 1 } },
-    create: { userId: user.id, date: today, articlesRead: 1 },
+
+  const already = await prisma.articleReadLog.findUnique({
+    where: { userId_articleId_date: { userId: user.id, articleId, date: today } },
   });
+  if (!already) {
+    try {
+      await prisma.$transaction([
+        prisma.articleReadLog.create({ data: { userId: user.id, articleId, date: today } }),
+        prisma.dailyProgress.upsert({
+          where: { userId_date: { userId: user.id, date: today } },
+          update: { articlesRead: { increment: 1 } },
+          create: { userId: user.id, date: today, articlesRead: 1 },
+        }),
+      ]);
+    } catch {
+      // Two near-simultaneous calls (e.g. StrictMode's mount + remount) can
+      // both pass the findUnique check before either commits - the unique
+      // constraint on ArticleReadLog rejects the second create, which is
+      // exactly the desired "only count once" outcome, so just swallow it.
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -578,17 +601,48 @@ const readingAttemptInput = z.object({
 // POST /api/reading/attempt - counts a completed generated-reading session toward today's stats
 // (separate from /mark-read/:id, which is for the older saved-Article gallery flow). If articleId
 // is provided, also logs an ArticleAttempt row so the passage's "Average Score" stat has data.
+//
+// Same ArticleReadLog dedup as /mark-read/:id, and for the same reason: a
+// learner can legitimately re-answer the same saved article's questions
+// several times in a day (retrying to improve their score), and each of
+// those should still log its own ArticleAttempt for the score history - but
+// only the first one that day should move the "articles read today" needle.
+// Ephemeral generated exercises with no articleId can't be deduped this way
+// (there's nothing to key on) and fall back to the old always-increment
+// behavior, same as before.
 router.post("/attempt", async (req, res) => {
   try {
     const user = getDbUser(req);
     const { totalCount, correctCount, articleId } = readingAttemptInput.parse(req.body);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    await prisma.dailyProgress.upsert({
-      where: { userId_date: { userId: user.id, date: today } },
-      update: { articlesRead: { increment: 1 } },
-      create: { userId: user.id, date: today, articlesRead: 1 },
-    });
+
+    let alreadyCountedToday = false;
+    if (articleId) {
+      const already = await prisma.articleReadLog.findUnique({
+        where: { userId_articleId_date: { userId: user.id, articleId, date: today } },
+      });
+      alreadyCountedToday = !!already;
+    }
+
+    if (!alreadyCountedToday) {
+      const ops = [
+        prisma.dailyProgress.upsert({
+          where: { userId_date: { userId: user.id, date: today } },
+          update: { articlesRead: { increment: 1 } },
+          create: { userId: user.id, date: today, articlesRead: 1 },
+        }),
+        ...(articleId ? [prisma.articleReadLog.create({ data: { userId: user.id, articleId, date: today } })] : []),
+      ];
+      try {
+        await prisma.$transaction(ops);
+      } catch {
+        // Same race as /mark-read/:id - a near-simultaneous duplicate call
+        // loses to the unique constraint on ArticleReadLog, which is the
+        // correct outcome (only count once), so just swallow it.
+      }
+    }
+
     if (articleId) {
       await prisma.articleAttempt.create({
         data: { articleId, userId: user.id, score: correctCount, total: totalCount },

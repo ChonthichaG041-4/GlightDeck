@@ -104,6 +104,7 @@ model User {
   articleAttempts   ArticleAttempt[]
   articleRatings    ArticleRating[]
   studyLists        StudyList[]
+  articleReadLogs   ArticleReadLog[]
 }
 
 model Collection {
@@ -301,6 +302,7 @@ model Article {
   attempts         ArticleAttempt[]
   ratings          ArticleRating[]
   studyLists       StudyListArticle[]
+  readLogs         ArticleReadLog[]
 
   @@index([userId])
   @@index([visibility])
@@ -419,6 +421,27 @@ model ArticleAttempt {
   article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
 
   @@index([articleId])
+}
+
+// One row per (user, article, day) - a dedup marker so DailyProgress.articlesRead
+// only ever counts a given article once per day, no matter how many times the
+// user reopens it (or how many times /mark-read or /attempt gets called for
+// it that day). See dashboard.ts's "readingArticles" stat and reading.ts's
+// mark-read/attempt handlers - before this existed, articlesRead was a naive
+// increment-on-every-call counter, so simply reopening the same article a few
+// times (or React StrictMode's dev double-invoke of the "mark read" effect)
+// could inflate it well past the learner's actual number of distinct articles.
+model ArticleReadLog {
+  id   String   @id @default(cuid())
+  date DateTime @db.Date
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  articleId String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, articleId, date])
 }
 
 model ArticleRating {

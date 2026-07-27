@@ -8,8 +8,6 @@ import "./index.css";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
-console.log("Clerk key =", clerkPubKey);
-console.log("All env =", import.meta.env);
 
 
 // Treat "missing" and "still the placeholder from .env.example" the same way -
