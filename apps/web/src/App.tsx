@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { SignedIn, SignedOut, RedirectToSignIn, SignIn, SignUp, useAuth } from "@clerk/clerk-react";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -30,9 +30,18 @@ function PageFallback() {
 
 function AuthBridge() {
   const { getToken } = useAuth();
-  useEffect(() => {
-    useAttachAuthToken(() => getToken());
-  }, [getToken]);
+  // Attached synchronously during render (not inside useEffect) so the
+  // interceptor is guaranteed to be in place before ANY sibling/descendant's
+  // own data-fetching effects can fire - AppLayout (rendered right after
+  // this in ProtectedShell) kicks off queries like /api/dashboard/home as
+  // soon as it mounts, and effects across sibling components can otherwise
+  // race: if AppLayout's query effect happened to run before this one, the
+  // very first request(s) after a fresh sign-in would go out with no
+  // Authorization header at all and come back 401 - exactly the "works on
+  // reload, fails right after signing in" symptom this fixes. useAttachAuthToken
+  // is idempotent (only the first call actually registers the interceptor),
+  // so calling it here on every render is safe.
+  useAttachAuthToken(() => getToken());
   return null;
 }
 
