@@ -189,11 +189,8 @@ export async function callOpenRouterVision({
     throw err;
   }
 
-  console.log("status =", response.status);
-  console.log("headers =", Object.fromEntries(response.headers.entries()));
   const body = await response.text();
 
-  console.log(body);
   if (!body.trim()) {
     throw new Error("OpenRouter returned an empty response");
   }

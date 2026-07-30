@@ -1426,16 +1426,28 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
     const content = blocksToPlainText(blocks);
     // Same fallback text ListeningWorkspace's instructionText() uses client-
     // side when Article.description is empty - keeping them identical means
-    // the pregenerated instruction/questionAudioUrls clips always match what
-    // a live on-demand generation would have said for the same article.
+    // whatever generateBookImportAudio ends up caching in the background
+    // matches what a live on-demand generation would have said for the same
+    // article (see the fire-and-forget call below).
     const instructionText = (parsed?.instruction ? String(parsed.instruction).trim() : "") ||
       "Listen carefully, then answer the questions based on what you heard.";
-    // "AI is Processing Your Document" also generates the read-aloud audio
-    // right here (combined + article/questions/choices/instruction, plus one
-    // per-question "instruction + prompt + choices" clip), so it's ready to
-    // store as soon as the wizard's Save step persists the Article - see
-    // generateBookImportAudio's doc comment for why this is best-effort.
-    const audio = await generateBookImportAudio(content, questions, instructionText);
+
+    // Deliberately NOT awaited. This used to block the response (with an
+    // internal timeout as a safety net), but even a bounded wait here could
+    // still push the combined OCR-call + audio-generation time past the
+    // hosting platform's own reverse-proxy timeout - which is outside our
+    // control and, in practice, shorter than assumed - killing the
+    // connection with a 502 before this handler ever got to respond at all
+    // (no JSON body, so the client saw an unhelpful generic failure). Firing
+    // this in the background instead means /import/book's response time is
+    // bounded only by the OCR vision call. The generated clips still land in
+    // AudioCache by content hash (see AudioCache.ts), so Listening's first
+    // on-demand play after Save usually still finds a warm cache - the only
+    // thing actually lost is populating Article.audioUrl/articleAudioUrl/etc.
+    // directly at Save time, which is why those fields are always null below now.
+    generateBookImportAudio(content, questions, instructionText).catch((err) => {
+      console.error("Book import (OCR): background audio pregeneration failed (non-fatal):", err?.message ?? err);
+    });
 
     res.json({
       title: (String(parsed?.title ?? "").trim() || deriveTitleFromParagraphs(paragraphs)),
@@ -1446,7 +1458,12 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
       blocks,
       content,
       questions,
-      ...audio,
+      audioUrl: null,
+      articleAudioUrl: null,
+      questionsAudioUrl: null,
+      choicesAudioUrl: null,
+      instructionAudioUrl: null,
+      questionAudioUrls: null,
     });
   } catch (err: any) {
     console.error("Book import (OCR) failed:", err?.message ?? err);
