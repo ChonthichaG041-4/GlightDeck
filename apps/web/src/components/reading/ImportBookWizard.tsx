@@ -28,7 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import QuestionBuilder from "./QuestionBuilder";
-import { useImportBook, useCreatePassage, useUpdatePassage, type ImportedBookDocument, type ReadingQuestion } from "@/api/hooks";
+import { useImportBook, useCreatePassage, useUpdatePassage, pollBookImportAudio, type ImportedBookDocument, type ReadingQuestion } from "@/api/hooks";
 import { getServerOrigin } from "@/api/client";
 import { playSuccessChime } from "@/lib/notificationSound";
 
@@ -210,7 +210,32 @@ export default function ImportBookWizard({
 
     try {
       const orderedFiles = await Promise.all(pages.map(rotateFileIfNeeded));
-      const data = await importBook.mutateAsync(orderedFiles);
+      let data = await importBook.mutateAsync(orderedFiles);
+
+      // Audio is generated as a background job on the server (never blocks the
+      // OCR response itself, which is what caused repeated 502s on Render's
+      // free tier). Poll here so the wizard only leaves "AI Processing" once
+      // the read-aloud audio is genuinely ready - the timer above is still
+      // running and stays parked on the "Generating read-aloud audio..." phase
+      // (with its rotating sub-messages) for the whole wait, so the UI keeps
+      // reflecting what's actually happening instead of jumping ahead early.
+      if (data.audioJobId) {
+        const audio = await pollBookImportAudio(data.audioJobId);
+        if (audio && audio.status === "done") {
+          data = {
+            ...data,
+            audioUrl: audio.audioUrl ?? null,
+            articleAudioUrl: audio.articleAudioUrl ?? null,
+            questionsAudioUrl: audio.questionsAudioUrl ?? null,
+            choicesAudioUrl: audio.choicesAudioUrl ?? null,
+            instructionAudioUrl: audio.instructionAudioUrl ?? null,
+            questionAudioUrls: audio.questionAudioUrls ?? null,
+          };
+        }
+        // If the poll times out or fails, `data` keeps its all-null audio
+        // fields and the existing AudioPreview fallback notice covers it.
+      }
+
       clearInterval(timer);
       setPhaseIndex(PROCESSING_PHASES.length - 1);
       playSuccessChime();

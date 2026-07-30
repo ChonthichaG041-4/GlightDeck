@@ -895,10 +895,13 @@ export interface ImportedBookDocument extends ImportedDocument {
   confidence?: number | null;
   pagesProcessed: number;
   questions: ReadingQuestion[];
-  // Read-aloud audio generated server-side during "AI is Processing" - see
-  // POST /reading/import/book. Null if TTS generation failed (non-fatal -
-  // the rest of the import still succeeds); carry these through to Save so
-  // they get persisted on the Article instead of regenerated later.
+  // Read-aloud audio generation kicks off server-side during "AI is
+  // Processing" but runs as a background job (not blocking this response -
+  // see POST /reading/import/book's comments), so these tracks are always
+  // null in the initial response. audioJobId is what to poll (see
+  // fetchBookImportAudioStatus/pollBookImportAudio below) until the job
+  // resolves and these fields get filled in client-side.
+  audioJobId?: string | null;
   audioUrl?: string | null;
   articleAudioUrl?: string | null;
   questionsAudioUrl?: string | null;
@@ -915,6 +918,49 @@ export function useImportBook() {
       return (await api.post<ImportedBookDocument>("/reading/import/book", form, { headers: { "Content-Type": "multipart/form-data" } })).data;
     },
   });
+}
+
+export interface BookImportAudioStatus {
+  status: "pending" | "done" | "not_found";
+  audioUrl?: string | null;
+  articleAudioUrl?: string | null;
+  questionsAudioUrl?: string | null;
+  choicesAudioUrl?: string | null;
+  instructionAudioUrl?: string | null;
+  questionAudioUrls?: (string | null)[] | null;
+}
+
+async function fetchBookImportAudioStatus(jobId: string): Promise<BookImportAudioStatus> {
+  return (await api.get<BookImportAudioStatus>(`/reading/import/book/audio/${jobId}`)).data;
+}
+
+/**
+ * Polls GET /reading/import/book/audio/:jobId (every `intervalMs`) until the
+ * background audio-pregeneration job started by /import/book finishes, or
+ * `maxWaitMs` elapses. Used by ImportBookWizard's "AI is Processing" step so
+ * the learner sees fully-generated read-aloud audio by the time they reach
+ * Review, instead of it being deferred to their first Listening play - see
+ * the big comment on bookImportAudioJobs in reading.ts for why this is a
+ * poll instead of just awaiting the audio inline in one request.
+ *
+ * Resolves to `null` (never throws) on timeout, a 404 (job already
+ * consumed/expired), or a network hiccup - all treated the same way by the
+ * caller: proceed without pregenerated audio, Listening will synthesize it
+ * live on first play instead.
+ */
+export async function pollBookImportAudio(
+  jobId: string,
+  maxWaitMs = 330_000,
+  intervalMs = 2000
+): Promise<BookImportAudioStatus | null> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const status = await fetchBookImportAudioStatus(jobId).catch(() => null);
+    if (!status || status.status === "not_found") return null;
+    if (status.status === "done") return status;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return null;
 }
 
 export function useVocabularyDetect() {

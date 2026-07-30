@@ -53,18 +53,31 @@ router.get("/articles", async (req, res) => {
     orderBy,
     select: {
       id: true, title: true, category: true, source: true, createdAt: true,
-      visibility: true, status: true, tags: true, cefrLevel: true, description: true, content: true,
+      visibility: true, status: true, tags: true, cefrLevel: true, description: true,
+      // `content` intentionally NOT selected here - articles can be long and
+      // card UIs only ever show a short excerpt. Fetched separately below,
+      // truncated at the DB level, and only for rows that actually need it.
       studyLists: { select: { studyListId: true } },
     },
   });
+
+  // Only articles without an author-written description need a body snippet.
+  const needsExcerpt = articles.filter((a) => !a.description?.trim()).map((a) => a.id);
+  const excerptRows = needsExcerpt.length
+    ? await prisma.$queryRaw<{ id: string; snippet: string }[]>`
+        SELECT "id", LEFT("content", 200) AS "snippet" FROM "Article" WHERE "id" = ANY(${needsExcerpt})
+      `
+    : [];
+  const excerptById = new Map(excerptRows.map((r) => [r.id, r.snippet]));
+
   res.json(
-    articles.map(({ studyLists, description, content, ...a }) => ({
+    articles.map(({ studyLists, description, ...a }) => ({
       ...a,
       studyListIds: studyLists.map((s) => s.studyListId),
       // Short preview for card UIs - prefer the author-written description,
-      // fall back to a trimmed snippet of the body so every article (even
-      // ones from the older paste-your-own-text flow) has something to show.
-      excerpt: (description?.trim() || content.trim()).slice(0, 160),
+      // fall back to a trimmed DB-side snippet of the body so every article
+      // (even ones from the older paste-your-own-text flow) has something to show.
+      excerpt: (description?.trim() || excerptById.get(a.id) || "").trim().slice(0, 160),
     }))
   );
 });
@@ -733,6 +746,23 @@ const PASSAGE_INCLUDE = {
   readingBookmarks: { orderBy: { createdAt: "asc" as const } },
 };
 
+// Lighter-weight shape for the /community list view: it discards
+// highlights/notes/bookmarks and only ever shows a short content preview, so
+// unlike PASSAGE_INCLUDE (used for the single-article detail view) it never
+// fetches those relations or the full `content` column at all.
+const COMMUNITY_LIST_SELECT = {
+  id: true, title: true, category: true, description: true, tags: true,
+  contentSource: true, blocksJson: true, vocabularyMode: true, vocabularyJson: true,
+  translation: true, questionsJson: true, examMode: true, cefrLevel: true, testMode: true,
+  audioUrl: true, articleAudioUrl: true, questionsAudioUrl: true, choicesAudioUrl: true,
+  instructionAudioUrl: true, questionAudioUrls: true,
+  visibility: true, status: true, viewCount: true, createdAt: true, userId: true,
+  user: { select: { name: true } },
+  likes: { select: { userId: true } },
+  ratings: { select: { userId: true, rating: true } },
+  attempts: { select: { score: true, total: true } },
+};
+
 // GET /api/reading/passages/:id - fetch a saved passage (own, or PUBLIC/UNLISTED).
 // Increments the view counter on every fetch except when the owner is viewing.
 router.get("/passages/:id", async (req, res) => {
@@ -1259,19 +1289,44 @@ function buildChoicesNarration(questions: any[]): string {
     .join("\n");
 }
 
-// Bounds how long the "AI is Processing" step's audio pregeneration is
-// allowed to add to the /import/book request. This is on top of an already
-// slow-ish request (the OCR vision call, plus - on Render/Railway's free
-// tier - up to 30-60s if the service had spun down from being idle, per
-// DEPLOY_BACKEND.md), and self-hosted Kokoro TTS is CPU-bound with no queue,
-// so it can be meaningfully slower on a shared/free-tier CPU than it is
-// locally. Racing against this timeout means a slow (not just a failed) TTS
-// pass degrades the same way a failed one already did - falls back to nulls,
-// Listening synthesizes on demand later - instead of holding the whole HTTP
-// response open long enough to trip a reverse-proxy/gateway timeout, which
-// surfaces to the learner as an unhelpful generic "import failed" with no
-// detail (the connection gets killed before our own try/catch ever runs).
-const BOOK_IMPORT_AUDIO_TIMEOUT_MS = 12_000;
+// Safety cap on the background audio-pregeneration job itself (see
+// bookImportAudioJobs below) - NOT tied to any single HTTP request's
+// lifetime anymore, so this can afford to be generous. Self-hosted Kokoro
+// TTS is CPU-bound with no queue, so a large exercise on a shared/free-tier
+// CPU can genuinely take a couple of minutes; this just stops a truly stuck
+// job from polling forever instead of eventually giving up gracefully.
+const BOOK_IMPORT_AUDIO_TIMEOUT_MS = 5 * 60_000;
+
+// ---------------------------------------------------------------------------
+// Book import's audio pregeneration runs as a background job, polled by the
+// wizard, instead of blocking the /import/book response - see the comment on
+// generateBookImportAudio and the route handler below for why (in short: an
+// in-request wait, even a short bounded one, could still push the whole
+// request past the hosting platform's own reverse-proxy timeout and kill the
+// connection with a 502 before we ever got to respond). The learner still
+// wants this audio ready by the time they reach the Review step though (not
+// deferred to first Listening play), so instead of returning it inline, the
+// OCR response carries a job id the wizard polls until it resolves.
+//
+// In-memory only (not a DB table) - these jobs are short-lived scratch state
+// for a single import session, not data that needs to survive a restart; if
+// the server does restart mid-job, the poll just 404s and the wizard falls
+// back to on-demand generation, same as any other failure here.
+interface BookImportAudioResult {
+  audioUrl: string | null;
+  articleAudioUrl: string | null;
+  questionsAudioUrl: string | null;
+  choicesAudioUrl: string | null;
+  instructionAudioUrl: string | null;
+  questionAudioUrls: (string | null)[] | null;
+}
+type BookImportAudioJob =
+  | { status: "pending" }
+  | { status: "done"; audio: BookImportAudioResult };
+const bookImportAudioJobs = new Map<string, BookImportAudioJob>();
+// Belt-and-suspenders cleanup for jobs nobody ever polls to completion (tab
+// closed mid-import, etc.) - keeps this map from growing unbounded.
+const BOOK_IMPORT_AUDIO_JOB_TTL_MS = 10 * 60_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -1432,22 +1487,38 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
     const instructionText = (parsed?.instruction ? String(parsed.instruction).trim() : "") ||
       "Listen carefully, then answer the questions based on what you heard.";
 
-    // Deliberately NOT awaited. This used to block the response (with an
-    // internal timeout as a safety net), but even a bounded wait here could
+    // Deliberately NOT awaited - see the big comment on bookImportAudioJobs
+    // above for why (in short: an in-request wait, even a bounded one, could
     // still push the combined OCR-call + audio-generation time past the
-    // hosting platform's own reverse-proxy timeout - which is outside our
-    // control and, in practice, shorter than assumed - killing the
-    // connection with a 502 before this handler ever got to respond at all
-    // (no JSON body, so the client saw an unhelpful generic failure). Firing
-    // this in the background instead means /import/book's response time is
-    // bounded only by the OCR vision call. The generated clips still land in
-    // AudioCache by content hash (see AudioCache.ts), so Listening's first
-    // on-demand play after Save usually still finds a warm cache - the only
-    // thing actually lost is populating Article.audioUrl/articleAudioUrl/etc.
-    // directly at Save time, which is why those fields are always null below now.
-    generateBookImportAudio(content, questions, instructionText).catch((err) => {
-      console.error("Book import (OCR): background audio pregeneration failed (non-fatal):", err?.message ?? err);
-    });
+    // hosting platform's own reverse-proxy timeout and kill the connection
+    // with a 502 before this handler ever got to respond at all - no JSON
+    // body, so the client saw an unhelpful generic failure). The learner
+    // still wants this audio ready before they reach Review though, so
+    // instead of returning it inline, /import/book responds immediately with
+    // a job id and the wizard polls GET /import/book/audio/:jobId until it
+    // resolves (see that route below).
+    const audioJobId = randomBlockId();
+    bookImportAudioJobs.set(audioJobId, { status: "pending" });
+    setTimeout(() => bookImportAudioJobs.delete(audioJobId), BOOK_IMPORT_AUDIO_JOB_TTL_MS).unref();
+    generateBookImportAudio(content, questions, instructionText)
+      .then((audio) => {
+        // Only overwrite if the TTL cleanup above hasn't already deleted this
+        // job (i.e. nobody's polling for it anymore) - no point keeping a
+        // finished result around past its own job's cleanup timer.
+        if (bookImportAudioJobs.has(audioJobId)) bookImportAudioJobs.set(audioJobId, { status: "done", audio });
+      })
+      .catch((err) => {
+        console.error("Book import (OCR): background audio pregeneration failed (non-fatal):", err?.message ?? err);
+        if (bookImportAudioJobs.has(audioJobId)) {
+          bookImportAudioJobs.set(audioJobId, {
+            status: "done",
+            audio: {
+              audioUrl: null, articleAudioUrl: null, questionsAudioUrl: null,
+              choicesAudioUrl: null, instructionAudioUrl: null, questionAudioUrls: null,
+            },
+          });
+        }
+      });
 
     res.json({
       title: (String(parsed?.title ?? "").trim() || deriveTitleFromParagraphs(paragraphs)),
@@ -1458,6 +1529,7 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
       blocks,
       content,
       questions,
+      audioJobId,
       audioUrl: null,
       articleAudioUrl: null,
       questionsAudioUrl: null,
@@ -1470,6 +1542,25 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
     if (err?.stack) console.error(err.stack);
     res.status(500).json({ error: friendlyOpenRouterError(err, "นำเข้าภาพหนังสือ/ข้อสอบด้วย AI") });
   }
+});
+
+// GET /api/reading/import/book/audio/:jobId - polled by ImportBookWizard's
+// "AI is Processing" step after /import/book responds, until the background
+// audio job (see bookImportAudioJobs above) finishes. { status: "pending" }
+// while still running; { status: "done", ...audio } once finished (audio
+// fields may still be all-null if generation genuinely failed/timed out -
+// that's a normal "done", not an error, the wizard just shows its existing
+// "will generate on first listen instead" notice in that case). 404 once a
+// job is no longer tracked (already consumed by an earlier poll, or expired
+// via the TTL cleanup - e.g. the wizard tab was closed mid-import).
+router.get("/import/book/audio/:jobId", (req, res) => {
+  const job = bookImportAudioJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ status: "not_found" });
+  if (job.status === "pending") return res.json({ status: "pending" });
+  // One-shot: the wizard only ever needs to see a "done" job once, so free
+  // it immediately rather than waiting for the TTL sweep.
+  bookImportAudioJobs.delete(req.params.jobId);
+  res.json({ status: "done", ...job.audio });
 });
 
 // GET /api/reading/community - browse PUBLIC passages from every user.
@@ -1493,15 +1584,25 @@ router.get("/community", async (req, res) => {
         ...(tagList.length ? { tags: { hasSome: tagList } } : {}),
         ...(search ? { title: { contains: search, mode: "insensitive" as const } } : {}),
       },
-      include: PASSAGE_INCLUDE,
+      select: COMMUNITY_LIST_SELECT,
       orderBy,
       take: 50,
     });
+
+    // Content preview only, truncated at the DB level - the full body isn't
+    // needed (or returned) for the community list view.
+    const ids = articles.map((a) => a.id);
+    const snippetRows = ids.length
+      ? await prisma.$queryRaw<{ id: string; snippet: string }[]>`
+          SELECT "id", LEFT("content", 220) AS "snippet" FROM "Article" WHERE "id" = ANY(${ids})
+        `
+      : [];
+    const snippetById = new Map(snippetRows.map((r) => [r.id, r.snippet]));
+
     res.json(
       articles.map((a) => {
-        const s = summarizeArticle(a, user.id);
-        // Community list view doesn't need the full body/annotations - keep it light.
-        return { ...s, content: s.content.slice(0, 220), highlights: [], notes: [], bookmarks: [] };
+        const s = summarizeArticle({ ...a, content: snippetById.get(a.id) ?? "" }, user.id);
+        return { ...s, highlights: [], notes: [], bookmarks: [] };
       })
     );
   } catch (err: any) {
