@@ -1371,23 +1371,31 @@ async function generateBookImportAudio(articleText: string, questions: any[], in
     questionAudioUrls: null as (string | null)[] | null,
   };
   try {
-    // Deliberately capped at 5 parallel TTS calls, independent of question
-    // count. An earlier version also fired one extra call per question here
-    // (up to 10+ for a typical exercise) - self-hosted Kokoro is CPU-bound
-    // with no request queue in front of it, so that many concurrent
-    // synthesis jobs thrash the CPU instead of running faster, stretching
-    // "AI is Processing" out past 10 minutes and eventually erroring out.
-    // Per-question "Question / Options" audio is generated on demand in
-    // Listening practice instead (one request, cached after that - see
-    // AudioCache) rather than blocking the whole import on all of them.
-    const [full, article, q, c, instruction] = await withTimeout(
-      Promise.all([
-        generateAudioFile({ text: fullText }),
-        generateAudioFile({ text: articleText }),
-        questionsText ? generateAudioFile({ text: questionsText }) : Promise.resolve(null),
-        choicesText ? generateAudioFile({ text: choicesText }) : Promise.resolve(null),
-        instructionText.trim() ? generateAudioFile({ text: instructionText.trim() }) : Promise.resolve(null),
-      ]),
+    // Sequential, NOT Promise.all - these used to fire as 5 concurrent TTS
+    // calls, which was already capped down from one-per-question (10+) to
+    // avoid thrashing self-hosted Kokoro's CPU-bound, queue-less inference.
+    // Even 5 at once turned out to be enough to crash the whole process on
+    // Render's free tier: Kokoro's ONNX model plus several simultaneous
+    // inferences (each holding its own PCM buffers) spikes memory/CPU right
+    // after an OCR call that already parsed multiple base64 images, and the
+    // resulting OOM/CPU-starvation kills the process - which then makes every
+    // OTHER in-flight request (including the unrelated GET .../audio/:jobId
+    // poll) fail with a 502 from Render's proxy until it restarts. Running
+    // these one at a time bounds peak memory to a single synthesis instead,
+    // at the cost of this background job taking longer - fine, since it's
+    // fire-and-forget with its own generous timeout below and was never on
+    // the critical path of the /import/book response itself.
+    const run = (text: string) => (text.trim() ? generateAudioFile({ text }) : Promise.resolve(null));
+    const runAll = async () => {
+      const full = await generateAudioFile({ text: fullText });
+      const article = await generateAudioFile({ text: articleText });
+      const q = await run(questionsText);
+      const c = await run(choicesText);
+      const instruction = await run(instructionText.trim());
+      return { full, article, q, c, instruction };
+    };
+    const { full, article, q, c, instruction } = await withTimeout(
+      runAll(),
       BOOK_IMPORT_AUDIO_TIMEOUT_MS,
       "Book import (OCR) audio pregeneration"
     );
