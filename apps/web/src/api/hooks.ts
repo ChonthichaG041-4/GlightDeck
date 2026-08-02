@@ -938,7 +938,23 @@ export interface BookImportAudioStatus {
 }
 
 async function fetchBookImportAudioStatus(jobId: string): Promise<BookImportAudioStatus> {
-  return (await api.get<BookImportAudioStatus>(`/reading/import/book/audio/${jobId}`)).data;
+  try {
+    return (await api.get<BookImportAudioStatus>(`/reading/import/book/audio/${jobId}`)).data;
+  } catch (err: any) {
+    // Axios throws on any non-2xx, including a 404 - but a 404 here IS the
+    // server's definitive, confirmed answer ({ status: "not_found" }, see
+    // the route in reading.ts), NOT a dropped connection. Previously this
+    // fell into the same catch-and-retry path as a genuine network failure,
+    // which meant a real "not_found" (job already consumed, expired via
+    // TTL, or lost to a server restart) got silently retried for the full
+    // poll duration and then reported as a misleading "connection unstable"
+    // timeout instead of the real reason. Surface the server's actual JSON
+    // body here so the caller can tell the two apart.
+    if (err?.response?.status === 404 && err.response.data) {
+      return err.response.data as BookImportAudioStatus;
+    }
+    throw err;
+  }
 }
 
 /**

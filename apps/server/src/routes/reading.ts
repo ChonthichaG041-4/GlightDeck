@@ -1590,7 +1590,13 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
 // TTL cleanup - e.g. the wizard tab was closed mid-import).
 router.get("/import/book/audio/:jobId", (req, res) => {
   const job = bookImportAudioJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ status: "not_found" });
+  if (!job) {
+    return res.status(404).json({
+      status: "not_found",
+      reason:
+        "ไม่พบงานสร้างเสียงนี้แล้ว (อาจถูกอ่านผลไปแล้วก่อนหน้านี้ หมดอายุ หรือเซิร์ฟเวอร์รีสตาร์ทระหว่างที่กำลังสร้างเสียง - พบได้บ่อยบนแผนฟรีที่ต้อง sleep/wake) - ระบบจะสร้างเสียงให้อัตโนมัติตอนทดสอบฟังแทน",
+    });
+  }
   if (job.status === "pending") return res.json({ status: "pending" });
   // One-shot: the wizard only ever needs to see a "done"/"failed" job once,
   // so free it immediately rather than waiting for the TTL sweep.
