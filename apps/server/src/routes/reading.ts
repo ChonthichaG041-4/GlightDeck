@@ -1290,7 +1290,7 @@ function buildChoicesNarration(questions: any[]): string {
 }
 
 // Safety cap on the background audio-pregeneration job itself (see
-// bookImportAudioJobs below) - NOT tied to any single HTTP request's
+// createBackgroundJob below) - NOT tied to any single HTTP request's
 // lifetime anymore, so this can afford to be generous. Self-hosted Kokoro
 // TTS is CPU-bound with no queue, so a large exercise on a shared/free-tier
 // CPU can genuinely take a couple of minutes; this just stops a truly stuck
@@ -1298,20 +1298,21 @@ function buildChoicesNarration(questions: any[]): string {
 const BOOK_IMPORT_AUDIO_TIMEOUT_MS = 5 * 60_000;
 
 // ---------------------------------------------------------------------------
-// Book import's audio pregeneration runs as a background job, polled by the
-// wizard, instead of blocking the /import/book response - see the comment on
-// generateBookImportAudio and the route handler below for why (in short: an
-// in-request wait, even a short bounded one, could still push the whole
+// Book import's OCR call AND its follow-on audio pregeneration both run as
+// background jobs, polled by the wizard, instead of blocking a request - see
+// the comments on runBookImportOcr/generateBookImportAudio and the route
+// handlers below for why (in short: either step, even bounded, could push a
 // request past the hosting platform's own reverse-proxy timeout and kill the
-// connection with a 502 before we ever got to respond). The learner still
-// wants this audio ready by the time they reach the Review step though (not
-// deferred to first Listening play), so instead of returning it inline, the
-// OCR response carries a job id the wizard polls until it resolves.
+// connection with a 502 before we ever got to respond).
 //
-// In-memory only (not a DB table) - these jobs are short-lived scratch state
-// for a single import session, not data that needs to survive a restart; if
-// the server does restart mid-job, the poll just 404s and the wizard falls
-// back to on-demand generation, same as any other failure here.
+// Backed by the BackgroundJob table (see schema.prisma) rather than a plain
+// in-memory Map - an in-memory store was tried first, but it meant a job's
+// status/result vanished the instant the Node process restarted (Render
+// free-tier idle-sleep/wake, or any redeploy), so a poll landing right after
+// a restart got a confusing "not_found" even though nothing had actually
+// failed. Postgres survives exactly the kind of restart that kills an
+// in-memory Map, at the cost of one extra query per poll tick - negligible
+// at this volume (one OCR job + one audio job per import).
 interface BookImportAudioResult {
   audioUrl: string | null;
   articleAudioUrl: string | null;
@@ -1320,17 +1321,51 @@ interface BookImportAudioResult {
   instructionAudioUrl: string | null;
   questionAudioUrls: (string | null)[] | null;
 }
-type BookImportAudioJob =
-  | { status: "pending" }
-  | { status: "done"; audio: BookImportAudioResult }
-  // Distinct from "done" with all-null fields: this means generation itself
-  // threw (TTS error, or the safety-cap timeout below), and carries a reason
-  // so the wizard can tell the learner WHY instead of a generic notice.
-  | { status: "failed"; reason: string };
-const bookImportAudioJobs = new Map<string, BookImportAudioJob>();
+const BOOK_IMPORT_OCR_JOB_KIND = "book_import_ocr";
+const BOOK_IMPORT_AUDIO_JOB_KIND = "book_import_audio";
+
+async function createBackgroundJob(kind: string, ttlMs: number): Promise<string> {
+  const id = randomBlockId();
+  await prisma.backgroundJob.create({
+    data: { id, kind, status: "pending", expiresAt: new Date(Date.now() + ttlMs) },
+  });
+  return id;
+}
+
+/** No-op (not an error) if the job row is already gone - e.g. the TTL sweep
+ * beat this to it, or nobody's polling anymore. Mirrors the old in-memory
+ * code's `if (jobs.has(id))` guard before overwriting. */
+async function completeBackgroundJob(id: string, result: unknown): Promise<void> {
+  await prisma.backgroundJob.updateMany({ where: { id }, data: { status: "done", result: result as any } });
+}
+async function failBackgroundJob(id: string, reason: string): Promise<void> {
+  await prisma.backgroundJob.updateMany({ where: { id }, data: { status: "failed", reason } });
+}
+
+/** Reads a job, treating an expired row as if it doesn't exist - the row
+ * itself is cleaned up by the periodic sweep below, but a poll never has to
+ * wait for that sweep to get the right (not_found) answer. */
+async function getBackgroundJob(id: string) {
+  const job = await prisma.backgroundJob.findUnique({ where: { id } });
+  if (!job || job.expiresAt.getTime() < Date.now()) return null;
+  return job;
+}
+
+async function consumeBackgroundJob(id: string): Promise<void> {
+  await prisma.backgroundJob.delete({ where: { id } }).catch(() => {});
+}
+
 // Belt-and-suspenders cleanup for jobs nobody ever polls to completion (tab
-// closed mid-import, etc.) - keeps this map from growing unbounded.
-const BOOK_IMPORT_AUDIO_JOB_TTL_MS = 10 * 60_000;
+// closed mid-import, etc.) plus any left behind by the not_found short-
+// circuit in getBackgroundJob above - keeps this table from growing
+// unbounded. Every 5 minutes is frequent enough given how short-lived these
+// jobs are (10-minute TTL) without adding meaningful DB load.
+const BOOK_IMPORT_JOB_TTL_MS = 10 * 60_000;
+setInterval(() => {
+  prisma.backgroundJob.deleteMany({ where: { expiresAt: { lt: new Date() } } }).catch((err: any) => {
+    console.error("BackgroundJob cleanup sweep failed (non-fatal):", err?.message ?? err);
+  });
+}, 5 * 60_000).unref();
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -1434,6 +1469,137 @@ function explainBookImportAudioFailure(reason: string): string {
   return `เกิดข้อผิดพลาดระหว่างสร้างเสียง: ${reason}`;
 }
 
+// ---------------------------------------------------------------------------
+// The OCR call itself (OpenRouter vision, with retries) ALSO runs as a
+// background job now, for the exact same reason the audio pregeneration
+// above does: it was still possible for the vision call (especially with
+// withOpenRouterRetry's retries stacking on top of an already-slow/overloaded
+// free model) to run long enough to exceed Render's reverse-proxy timeout,
+// which kills the in-flight connection with a 502 before this handler ever
+// gets to send a response - independent of, and in addition to, the audio
+// generation that was fixed earlier. So /import/book now does effectively no
+// synchronous work: it validates the upload, kicks off runBookImportOcr in
+// the background, and responds immediately with an importJobId. The wizard
+// polls GET /import/book/status/:jobId (mirroring the audio job endpoint)
+// until the OCR result (including its own nested audioJobId) is ready.
+interface BookImportOcrResult {
+  title: string;
+  level: string | null;
+  instruction: string | null;
+  confidence: number | null;
+  pagesProcessed: number;
+  blocks: Block[];
+  content: string;
+  questions: any[];
+  audioJobId: string;
+}
+// Safety cap on the OCR call (including its built-in retries) - generous
+// since it's no longer tied to any request's lifetime, just stops a truly
+// stuck call from hanging the job forever.
+const BOOK_IMPORT_OCR_TIMEOUT_MS = 4 * 60_000;
+
+/** Thrown for OUR OWN validation failures (bad/empty AI response, no
+ * paragraphs found, etc.) so the job's .catch handler below can tell them
+ * apart from a raw OpenRouter error and use the message as-is instead of
+ * re-wrapping it through friendlyOpenRouterError. */
+class BookImportError extends Error {}
+
+async function runBookImportOcr(files: Express.Multer.File[]): Promise<BookImportOcrResult> {
+  const openRouterKey = process.env.OPENROUTER_API_KEY!; // checked by the caller before this job is even created
+
+  const raw = await withTimeout(
+    withOpenRouterRetry(() =>
+      callOpenRouterVision({
+        systemPrompt: BOOK_IMPORT_SYSTEM_PROMPT,
+        userText: BOOK_IMPORT_USER_PROMPT,
+        images: files.map((f) => ({ mimeType: f.mimetype || "image/jpeg", base64: f.buffer.toString("base64") })),
+        apiKey: openRouterKey,
+      })
+    ),
+    BOOK_IMPORT_OCR_TIMEOUT_MS,
+    "Book import (OCR) OpenRouter vision call"
+  );
+
+  let parsed: any;
+  try {
+    parsed = extractJsonObject(raw);
+  } catch (parseErr: any) {
+    console.error("Book import (OCR): model response was not valid JSON.");
+    console.error("Raw response:", parseErr?.rawResponse ?? raw);
+    throw new BookImportError(
+      "AI ตอบกลับไม่ใช่ JSON ที่ถูกต้อง กรุณาลองใหม่อีกครั้ง (โมเดลฟรีบางตัวตอบไม่ตรงรูปแบบเป็นครั้งคราว - ลองใหม่มักจะได้โมเดลอื่น)"
+    );
+  }
+
+  const paragraphs: string[] = Array.isArray(parsed?.article?.paragraphs)
+    ? parsed.article.paragraphs.map((p: any) => String(p).trim()).filter(Boolean)
+    : [];
+  if (!paragraphs.length) {
+    throw new BookImportError("ไม่พบเนื้อหาบทความในภาพที่อัปโหลด ลองใหม่อีกครั้งด้วยภาพที่ชัดเจนกว่านี้");
+  }
+
+  const blocks: Block[] = paragraphs.map((p) => ({ id: randomBlockId(), type: "PARAGRAPH" as const, text: p }));
+
+  const questions = (Array.isArray(parsed?.questions) ? parsed.questions : [])
+    .filter((q: any) => q?.prompt?.trim() && q?.type)
+    .map((q: any) => {
+      const type = (BOOK_QUESTION_TYPES as readonly string[]).includes(q.type) ? q.type : "MULTIPLE_CHOICE";
+      const question: any = {
+        type,
+        skill: q.skill ? String(q.skill).trim() : "Reading Comprehension",
+        difficulty: q.difficulty ? String(q.difficulty).trim() : undefined,
+        prompt: String(q.prompt).trim(),
+        options: Array.isArray(q.options) ? q.options.map(String) : [],
+        answer: String(q.answer ?? "").trim(),
+      };
+      if (type === "MATCHING" && Array.isArray(q.pairs)) {
+        question.pairs = q.pairs.map((p: any) => ({ left: String(p?.left ?? "").trim(), right: String(p?.right ?? "").trim() }));
+      }
+      if (type === "ORDERING" && Array.isArray(q.items)) {
+        question.items = q.items.map((it: any) => String(it).trim());
+      }
+      return question;
+    });
+
+  const content = blocksToPlainText(blocks);
+  // Same fallback text ListeningWorkspace's instructionText() uses client-
+  // side when Article.description is empty - keeping them identical means
+  // whatever generateBookImportAudio ends up caching in the background
+  // matches what a live on-demand generation would have said for the same
+  // article (see the fire-and-forget call below).
+  const instructionText = (parsed?.instruction ? String(parsed.instruction).trim() : "") ||
+    "Listen carefully, then answer the questions based on what you heard.";
+
+  // Deliberately NOT awaited - see the big comment on createBackgroundJob
+  // above for why. Kicked off here (inside the background OCR job) rather
+  // than back in the route handler, since the route handler no longer does
+  // any of this work itself.
+  const audioJobId = await createBackgroundJob(BOOK_IMPORT_AUDIO_JOB_KIND, BOOK_IMPORT_JOB_TTL_MS);
+  generateBookImportAudio(content, questions, instructionText)
+    .then(({ result: audio, error }) => {
+      if (error) {
+        return failBackgroundJob(audioJobId, explainBookImportAudioFailure(error));
+      }
+      return completeBackgroundJob(audioJobId, audio);
+    })
+    .catch((err) => {
+      console.error("Book import (OCR): background audio pregeneration failed unexpectedly:", err?.message ?? err);
+      return failBackgroundJob(audioJobId, explainBookImportAudioFailure(err?.message ?? String(err))).catch(() => {});
+    });
+
+  return {
+    title: String(parsed?.title ?? "").trim() || deriveTitleFromParagraphs(paragraphs),
+    level: parsed?.level ? String(parsed.level).trim() : null,
+    instruction: parsed?.instruction ? String(parsed.instruction).trim() : null,
+    confidence: Number.isFinite(parsed?.confidence) ? Math.min(100, Math.max(0, Math.round(parsed.confidence))) : null,
+    pagesProcessed: files.length,
+    blocks,
+    content,
+    questions,
+    audioJobId,
+  };
+}
+
 router.post("/import/book", uploadImages.array("images", 12), async (req, res) => {
   try {
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
@@ -1456,153 +1622,81 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
       });
     }
 
-    const raw = await withOpenRouterRetry(() =>
-      callOpenRouterVision({
-        systemPrompt: BOOK_IMPORT_SYSTEM_PROMPT,
-        userText: BOOK_IMPORT_USER_PROMPT,
-        images: files.map((f) => ({ mimeType: f.mimetype || "image/jpeg", base64: f.buffer.toString("base64") })),
-        apiKey: openRouterKey,
-      })
-    );
-
-    let parsed: any;
-    try {
-      parsed = extractJsonObject(raw);
-    } catch (parseErr: any) {
-      console.error("Book import (OCR): model response was not valid JSON.");
-      console.error("Raw response:", parseErr?.rawResponse ?? raw);
-      return res.status(502).json({
-        error:
-          "AI ตอบกลับไม่ใช่ JSON ที่ถูกต้อง กรุณาลองใหม่อีกครั้ง (โมเดลฟรีบางตัวตอบไม่ตรงรูปแบบเป็นครั้งคราว - ลองใหม่มักจะได้โมเดลอื่น)",
-      });
-    }
-
-    const paragraphs: string[] = Array.isArray(parsed?.article?.paragraphs)
-      ? parsed.article.paragraphs.map((p: any) => String(p).trim()).filter(Boolean)
-      : [];
-    if (!paragraphs.length) {
-      return res.status(400).json({ error: "ไม่พบเนื้อหาบทความในภาพที่อัปโหลด ลองใหม่อีกครั้งด้วยภาพที่ชัดเจนกว่านี้" });
-    }
-
-    const blocks: Block[] = paragraphs.map((p) => ({ id: randomBlockId(), type: "PARAGRAPH" as const, text: p }));
-
-    const questions = (Array.isArray(parsed?.questions) ? parsed.questions : [])
-      .filter((q: any) => q?.prompt?.trim() && q?.type)
-      .map((q: any) => {
-        const type = (BOOK_QUESTION_TYPES as readonly string[]).includes(q.type) ? q.type : "MULTIPLE_CHOICE";
-        const question: any = {
-          type,
-          skill: q.skill ? String(q.skill).trim() : "Reading Comprehension",
-          difficulty: q.difficulty ? String(q.difficulty).trim() : undefined,
-          prompt: String(q.prompt).trim(),
-          options: Array.isArray(q.options) ? q.options.map(String) : [],
-          answer: String(q.answer ?? "").trim(),
-        };
-        if (type === "MATCHING" && Array.isArray(q.pairs)) {
-          question.pairs = q.pairs.map((p: any) => ({ left: String(p?.left ?? "").trim(), right: String(p?.right ?? "").trim() }));
-        }
-        if (type === "ORDERING" && Array.isArray(q.items)) {
-          question.items = q.items.map((it: any) => String(it).trim());
-        }
-        return question;
+    // Deliberately NOT awaited - see the big comment on createBackgroundJob
+    // above. Responds immediately with a job id; the wizard polls GET
+    // /import/book/status/:jobId until the OCR result is ready.
+    const importJobId = await createBackgroundJob(BOOK_IMPORT_OCR_JOB_KIND, BOOK_IMPORT_JOB_TTL_MS);
+    runBookImportOcr(files)
+      .then((result) => completeBackgroundJob(importJobId, result))
+      .catch((err: any) => {
+        console.error("Book import (OCR) failed:", err?.message ?? err);
+        if (err?.stack) console.error(err.stack);
+        const reason =
+          err instanceof BookImportError ? err.message : friendlyOpenRouterError(err, "นำเข้าภาพหนังสือ/ข้อสอบด้วย AI");
+        return failBackgroundJob(importJobId, reason).catch(() => {});
       });
 
-    const content = blocksToPlainText(blocks);
-    // Same fallback text ListeningWorkspace's instructionText() uses client-
-    // side when Article.description is empty - keeping them identical means
-    // whatever generateBookImportAudio ends up caching in the background
-    // matches what a live on-demand generation would have said for the same
-    // article (see the fire-and-forget call below).
-    const instructionText = (parsed?.instruction ? String(parsed.instruction).trim() : "") ||
-      "Listen carefully, then answer the questions based on what you heard.";
-
-    // Deliberately NOT awaited - see the big comment on bookImportAudioJobs
-    // above for why (in short: an in-request wait, even a bounded one, could
-    // still push the combined OCR-call + audio-generation time past the
-    // hosting platform's own reverse-proxy timeout and kill the connection
-    // with a 502 before this handler ever got to respond at all - no JSON
-    // body, so the client saw an unhelpful generic failure). The learner
-    // still wants this audio ready before they reach Review though, so
-    // instead of returning it inline, /import/book responds immediately with
-    // a job id and the wizard polls GET /import/book/audio/:jobId until it
-    // resolves (see that route below).
-    const audioJobId = randomBlockId();
-    bookImportAudioJobs.set(audioJobId, { status: "pending" });
-    setTimeout(() => bookImportAudioJobs.delete(audioJobId), BOOK_IMPORT_AUDIO_JOB_TTL_MS).unref();
-    generateBookImportAudio(content, questions, instructionText)
-      .then(({ result: audio, error }) => {
-        // Only overwrite if the TTL cleanup above hasn't already deleted this
-        // job (i.e. nobody's polling for it anymore) - no point keeping a
-        // finished result around past its own job's cleanup timer.
-        if (!bookImportAudioJobs.has(audioJobId)) return;
-        if (error) {
-          bookImportAudioJobs.set(audioJobId, { status: "failed", reason: explainBookImportAudioFailure(error) });
-        } else {
-          bookImportAudioJobs.set(audioJobId, { status: "done", audio });
-        }
-      })
-      .catch((err) => {
-        // generateBookImportAudio catches its own errors internally and
-        // should never actually reject - this is just a safety net for a
-        // truly unexpected synchronous throw.
-        console.error("Book import (OCR): background audio pregeneration failed unexpectedly:", err?.message ?? err);
-        if (bookImportAudioJobs.has(audioJobId)) {
-          bookImportAudioJobs.set(audioJobId, {
-            status: "failed",
-            reason: explainBookImportAudioFailure(err?.message ?? String(err)),
-          });
-        }
-      });
-
-    res.json({
-      title: (String(parsed?.title ?? "").trim() || deriveTitleFromParagraphs(paragraphs)),
-      level: parsed?.level ? String(parsed.level).trim() : null,
-      instruction: parsed?.instruction ? String(parsed.instruction).trim() : null,
-      confidence: Number.isFinite(parsed?.confidence) ? Math.min(100, Math.max(0, Math.round(parsed.confidence))) : null,
-      pagesProcessed: files.length,
-      blocks,
-      content,
-      questions,
-      audioJobId,
-      audioUrl: null,
-      articleAudioUrl: null,
-      questionsAudioUrl: null,
-      choicesAudioUrl: null,
-      instructionAudioUrl: null,
-      questionAudioUrls: null,
-    });
+    res.json({ importJobId });
   } catch (err: any) {
-    console.error("Book import (OCR) failed:", err?.message ?? err);
+    console.error("Book import (OCR) failed to start:", err?.message ?? err);
     if (err?.stack) console.error(err.stack);
     res.status(500).json({ error: friendlyOpenRouterError(err, "นำเข้าภาพหนังสือ/ข้อสอบด้วย AI") });
   }
 });
 
+// GET /api/reading/import/book/status/:jobId - polled by ImportBookWizard's
+// "AI is Processing" step right after /import/book responds with an
+// importJobId, until the background OCR job (see createBackgroundJob above)
+// finishes. { status: "pending" } while still running; { status: "done",
+// ...result } once the passage/questions are extracted (result.audioJobId is
+// then what the wizard polls next, via GET /import/book/audio/:jobId, for
+// the read-aloud audio); { status: "failed", reason } if OCR itself failed
+// (bad AI response, no paragraphs found, OpenRouter error/timeout - reason
+// is a learner-facing Thai explanation). 404 { status: "not_found" } once a
+// job is no longer tracked (already consumed, expired, or lost to a server
+// restart - though a restart alone no longer loses it, now that job state
+// lives in Postgres instead of an in-memory Map).
+router.get("/import/book/status/:jobId", async (req, res) => {
+  const job = await getBackgroundJob(req.params.jobId);
+  if (!job || job.kind !== BOOK_IMPORT_OCR_JOB_KIND) {
+    return res.status(404).json({
+      status: "not_found",
+      reason:
+        "ไม่พบงานนำเข้านี้แล้ว (อาจถูกอ่านผลไปแล้วก่อนหน้านี้ หรือหมดอายุ) กรุณาลองนำเข้าใหม่อีกครั้ง",
+    });
+  }
+  if (job.status === "pending") return res.json({ status: "pending" });
+  await consumeBackgroundJob(req.params.jobId);
+  if (job.status === "failed") return res.json({ status: "failed", reason: job.reason });
+  res.json({ status: "done", ...(job.result as object) });
+});
+
 // GET /api/reading/import/book/audio/:jobId - polled by ImportBookWizard's
 // "AI is Processing" step after /import/book responds, until the background
-// audio job (see bookImportAudioJobs above) finishes. { status: "pending" }
+// audio job (see createBackgroundJob above) finishes. { status: "pending" }
 // while still running; { status: "done", ...audio } once finished; or
 // { status: "failed", reason } if generateBookImportAudio itself threw (TTS
 // error or its own safety-cap timeout) - reason is a learner-facing Thai
 // explanation (see explainBookImportAudioFailure) so the wizard can show
 // WHY instead of a generic notice. 404 { status: "not_found" } once a job is
-// no longer tracked (already consumed by an earlier poll, or expired via the
-// TTL cleanup - e.g. the wizard tab was closed mid-import).
-router.get("/import/book/audio/:jobId", (req, res) => {
-  const job = bookImportAudioJobs.get(req.params.jobId);
-  if (!job) {
+// no longer tracked (already consumed by an earlier poll, or expired - a
+// server restart alone no longer loses it, now that job state lives in
+// Postgres instead of an in-memory Map).
+router.get("/import/book/audio/:jobId", async (req, res) => {
+  const job = await getBackgroundJob(req.params.jobId);
+  if (!job || job.kind !== BOOK_IMPORT_AUDIO_JOB_KIND) {
     return res.status(404).json({
       status: "not_found",
       reason:
-        "ไม่พบงานสร้างเสียงนี้แล้ว (อาจถูกอ่านผลไปแล้วก่อนหน้านี้ หมดอายุ หรือเซิร์ฟเวอร์รีสตาร์ทระหว่างที่กำลังสร้างเสียง - พบได้บ่อยบนแผนฟรีที่ต้อง sleep/wake) - ระบบจะสร้างเสียงให้อัตโนมัติตอนทดสอบฟังแทน",
+        "ไม่พบงานสร้างเสียงนี้แล้ว (อาจถูกอ่านผลไปแล้วก่อนหน้านี้ หรือหมดอายุ) - ระบบจะสร้างเสียงให้อัตโนมัติตอนทดสอบฟังแทน",
     });
   }
   if (job.status === "pending") return res.json({ status: "pending" });
   // One-shot: the wizard only ever needs to see a "done"/"failed" job once,
   // so free it immediately rather than waiting for the TTL sweep.
-  bookImportAudioJobs.delete(req.params.jobId);
+  await consumeBackgroundJob(req.params.jobId);
   if (job.status === "failed") return res.json({ status: "failed", reason: job.reason });
-  res.json({ status: "done", ...job.audio });
+  res.json({ status: "done", ...(job.result as object) });
 });
 
 // GET /api/reading/community - browse PUBLIC passages from every user.

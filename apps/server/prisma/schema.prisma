@@ -564,3 +564,25 @@ model UserAchievement {
 
   @@unique([userId, achievementId])
 }
+
+// Durable store for short-lived background jobs (currently: Import Reading
+// from Images' OCR step and its follow-on read-aloud audio pregeneration -
+// see routes/reading.ts). These used to live in a plain in-memory Map on the
+// Node process, which meant a job's status/result vanished if the process
+// restarted mid-job (Render free tier idle-sleep/wake, or any redeploy) -
+// the poller would then get a confusing "not_found" even though nothing was
+// really wrong. Backing this by Postgres instead means the job survives a
+// server restart exactly like any other request/response would have to
+// anyway; `expiresAt` is enforced at read-time (see getBackgroundJob in
+// reading.ts) plus swept periodically so this table never grows unbounded.
+model BackgroundJob {
+  id        String   @id
+  kind      String
+  status    String
+  result    Json?
+  reason    String?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
