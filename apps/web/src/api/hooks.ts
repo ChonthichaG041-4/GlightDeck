@@ -921,7 +921,14 @@ export function useImportBook() {
 }
 
 export interface BookImportAudioStatus {
-  status: "pending" | "done" | "not_found";
+  // "timeout" is a client-side synthetic status (see pollBookImportAudio) -
+  // the server itself only ever returns pending/done/not_found/failed.
+  status: "pending" | "done" | "not_found" | "failed" | "timeout";
+  // Learner-facing Thai explanation, present on "failed" (from the server,
+  // e.g. a TTS error or the background job's own safety-cap timeout) and on
+  // "timeout" (synthesized client-side if the poll itself never got a
+  // conclusive answer in time).
+  reason?: string;
   audioUrl?: string | null;
   articleAudioUrl?: string | null;
   questionsAudioUrl?: string | null;
@@ -943,24 +950,46 @@ async function fetchBookImportAudioStatus(jobId: string): Promise<BookImportAudi
  * the big comment on bookImportAudioJobs in reading.ts for why this is a
  * poll instead of just awaiting the audio inline in one request.
  *
- * Resolves to `null` (never throws) on timeout, a 404 (job already
- * consumed/expired), or a network hiccup - all treated the same way by the
- * caller: proceed without pregenerated audio, Listening will synthesize it
- * live on first play instead.
+ * IMPORTANT: a single failed request here (dropped connection, a brief
+ * CORS-storming proxy blip while Render's free tier is waking up, etc.) is
+ * NOT the same thing as the server confirming the job is gone - it's retried
+ * like any other "still pending" tick instead of ending the poll early. Only
+ * a genuine server response of "done" or "failed" (or a real 404
+ * "not_found") ends the poll before the deadline, so a transient network
+ * hiccup can no longer masquerade as "audio generation failed" the way it
+ * did before this fix.
+ *
+ * Always resolves (never throws) to a status the caller can show as-is:
+ * "done" with the audio URLs, "failed"/"not_found" with a `reason` from the
+ * server, or a synthesized "timeout" with its own `reason` if maxWaitMs
+ * elapses without a conclusive answer.
  */
 export async function pollBookImportAudio(
   jobId: string,
   maxWaitMs = 330_000,
   intervalMs = 2000
-): Promise<BookImportAudioStatus | null> {
+): Promise<BookImportAudioStatus> {
   const deadline = Date.now() + maxWaitMs;
+  let lastNetworkError: string | null = null;
   while (Date.now() < deadline) {
-    const status = await fetchBookImportAudioStatus(jobId).catch(() => null);
-    if (!status || status.status === "not_found") return null;
-    if (status.status === "done") return status;
+    try {
+      const status = await fetchBookImportAudioStatus(jobId);
+      if (status.status === "done" || status.status === "failed" || status.status === "not_found") {
+        return status;
+      }
+      // status === "pending" - fall through and poll again.
+    } catch (err: any) {
+      // Network-level failure, not a server-confirmed answer - keep polling.
+      lastNetworkError = err?.message ?? String(err);
+    }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
-  return null;
+  return {
+    status: "timeout",
+    reason: lastNetworkError
+      ? `หมดเวลารอ (การเชื่อมต่อกับเซิร์ฟเวอร์ไม่เสถียรระหว่างรอผลลัพธ์: ${lastNetworkError})`
+      : `หมดเวลารอการสร้างเสียง (เกิน ${Math.round(maxWaitMs / 60_000)} นาที)`,
+  };
 }
 
 export function useVocabularyDetect() {

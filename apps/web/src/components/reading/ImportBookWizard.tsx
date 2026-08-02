@@ -108,6 +108,10 @@ export default function ImportBookWizard({
   const [subIndex, setSubIndex] = useState(0);
   const [processError, setProcessError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportedBookDocument | null>(null);
+  // Set when the background audio job comes back "failed"/"not_found"/
+  // "timeout" instead of "done" - shown in place of the generic AudioPreview
+  // notice so the learner knows WHY, not just that it didn't work.
+  const [audioFailReason, setAudioFailReason] = useState<string | null>(null);
 
   // Step 4 - Review Results (editable)
   const [title, setTitle] = useState("");
@@ -202,6 +206,7 @@ export default function ImportBookWizard({
     setPhaseIndex(0);
     setSubIndex(0);
     setProcessError(null);
+    setAudioFailReason(null);
 
     const timer = setInterval(() => {
       setPhaseIndex((i) => (i < PROCESSING_PHASES.length - 2 ? i + 1 : i));
@@ -221,7 +226,7 @@ export default function ImportBookWizard({
       // reflecting what's actually happening instead of jumping ahead early.
       if (data.audioJobId) {
         const audio = await pollBookImportAudio(data.audioJobId);
-        if (audio && audio.status === "done") {
+        if (audio.status === "done") {
           data = {
             ...data,
             audioUrl: audio.audioUrl ?? null,
@@ -231,9 +236,15 @@ export default function ImportBookWizard({
             instructionAudioUrl: audio.instructionAudioUrl ?? null,
             questionAudioUrls: audio.questionAudioUrls ?? null,
           };
+          setAudioFailReason(null);
+        } else {
+          // "failed" / "not_found" / "timeout" - `data` keeps its all-null
+          // audio fields; record why so AudioPreview can show the real
+          // reason instead of a generic notice.
+          setAudioFailReason(
+            audio.reason ?? "สร้างเสียงไม่สำเร็จ (ไม่ทราบสาเหตุ) - ระบบจะสร้างเสียงให้อัตโนมัติตอนทดสอบฟังแทน"
+          );
         }
-        // If the poll times out or fails, `data` keeps its all-null audio
-        // fields and the existing AudioPreview fallback notice covers it.
       }
 
       clearInterval(timer);
@@ -379,6 +390,7 @@ export default function ImportBookWizard({
               choicesAudioUrl: result?.choicesAudioUrl,
               instructionAudioUrl: result?.instructionAudioUrl,
             }}
+            audioFailReason={audioFailReason}
             collection={collection} setCollection={setCollection}
             tags={tags} setTags={setTags} tagDraft={tagDraft} setTagDraft={setTagDraft} onAddTag={addTag}
             visibility={visibility} setVisibility={setVisibility}
@@ -711,7 +723,7 @@ interface SaveStepAudio {
 
 function SaveStep({
   pagesProcessed, questionsCount, collection, setCollection, tags, setTags, tagDraft, setTagDraft, onAddTag,
-  visibility, setVisibility, saveError, isSaving, onBack, onSave, onSaveAndOpen, audio,
+  visibility, setVisibility, saveError, isSaving, onBack, onSave, onSaveAndOpen, audio, audioFailReason,
 }: {
   pagesProcessed: number;
   questionsCount: number;
@@ -725,6 +737,7 @@ function SaveStep({
   onSave: () => void;
   onSaveAndOpen: () => void;
   audio: SaveStepAudio;
+  audioFailReason: string | null;
 }) {
   const visibilityOptions: { value: "PRIVATE" | "UNLISTED" | "PUBLIC"; label: string }[] = [
     { value: "PRIVATE", label: "Private" },
@@ -790,7 +803,7 @@ function SaveStep({
         <p className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Structured Successfully</p>
       </div>
 
-      <AudioPreview audio={audio} />
+      <AudioPreview audio={audio} failReason={audioFailReason} />
 
       {saveError && <p className="text-sm text-destructive">{saveError}</p>}
 
@@ -815,7 +828,7 @@ const AUDIO_PREVIEW_TRACKS: { key: keyof SaveStepAudio; label: string }[] = [
   { key: "choicesAudioUrl", label: "ตัวเลือก" },
 ];
 
-function AudioPreview({ audio }: { audio: SaveStepAudio }) {
+function AudioPreview({ audio, failReason }: { audio: SaveStepAudio; failReason: string | null }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
 
@@ -824,7 +837,10 @@ function AudioPreview({ audio }: { audio: SaveStepAudio }) {
     return (
       <div className="flex items-start gap-1.5 rounded-lg border bg-amber-50 p-3 text-xs text-amber-700">
         <AlertTriangle className="h-3.5 w-3.5 shrink-0 translate-y-0.5" />
-        <span>สร้างเสียงอ่านไม่สำเร็จตอนประมวลผล - ระบบจะสร้างเสียงให้อัตโนมัติตอนทดสอบฟังแทน (ช้ากว่าเล็กน้อยในครั้งแรก)</span>
+        <div className="space-y-0.5">
+          <p>สร้างเสียงอ่านไม่สำเร็จตอนประมวลผล - ระบบจะสร้างเสียงให้อัตโนมัติตอนทดสอบฟังแทน (ช้ากว่าเล็กน้อยในครั้งแรก)</p>
+          {failReason && <p className="text-amber-800/80">สาเหตุ: {failReason}</p>}
+        </div>
       </div>
     );
   }

@@ -1322,7 +1322,11 @@ interface BookImportAudioResult {
 }
 type BookImportAudioJob =
   | { status: "pending" }
-  | { status: "done"; audio: BookImportAudioResult };
+  | { status: "done"; audio: BookImportAudioResult }
+  // Distinct from "done" with all-null fields: this means generation itself
+  // threw (TTS error, or the safety-cap timeout below), and carries a reason
+  // so the wizard can tell the learner WHY instead of a generic notice.
+  | { status: "failed"; reason: string };
 const bookImportAudioJobs = new Map<string, BookImportAudioJob>();
 // Belt-and-suspenders cleanup for jobs nobody ever polls to completion (tab
 // closed mid-import, etc.) - keeps this map from growing unbounded.
@@ -1353,23 +1357,28 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  * Deliberately does NOT also pregenerate one clip per question here (that
  * was tried and reverted - see the comment inside the function for why).
  */
-async function generateBookImportAudio(articleText: string, questions: any[], instructionText: string) {
+async function generateBookImportAudio(
+  articleText: string,
+  questions: any[],
+  instructionText: string
+): Promise<{ result: BookImportAudioResult; error: string | null }> {
   const questionsText = buildQuestionsNarration(questions);
   const choicesText = buildChoicesNarration(questions);
   const fullText = [articleText, questionsText, choicesText].filter(Boolean).join("\n\n");
 
-  const result = {
-    audioUrl: null as string | null,
-    articleAudioUrl: null as string | null,
-    questionsAudioUrl: null as string | null,
-    choicesAudioUrl: null as string | null,
-    instructionAudioUrl: null as string | null,
+  const result: BookImportAudioResult = {
+    audioUrl: null,
+    articleAudioUrl: null,
+    questionsAudioUrl: null,
+    choicesAudioUrl: null,
+    instructionAudioUrl: null,
     // NOT pregenerated here anymore - see the removal note below. Always
     // null; ListeningWorkspace's "Question / Options" card already handles
     // that gracefully (falls back to its existing live-generation path,
     // which the server then caches by content hash on first listen).
-    questionAudioUrls: null as (string | null)[] | null,
+    questionAudioUrls: null,
   };
+  let error: string | null = null;
   try {
     // Sequential, NOT Promise.all - these used to fire as 5 concurrent TTS
     // calls, which was already capped down from one-per-question (10+) to
@@ -1405,12 +1414,24 @@ async function generateBookImportAudio(articleText: string, questions: any[], in
     result.choicesAudioUrl = c?.url ?? null;
     result.instructionAudioUrl = instruction?.url ?? null;
   } catch (err: any) {
+    error = err?.message ?? String(err);
     console.error(
       "Book import (OCR): audio generation failed or was too slow (non-fatal - import still succeeds, Listening will synthesize on demand instead):",
-      err?.message ?? err
+      error
     );
   }
-  return result;
+  return { result, error };
+}
+
+/** Turns a raw error/timeout message from generateBookImportAudio into a
+ * short, learner-facing Thai explanation instead of a generic notice - this
+ * is what actually answers "ทำไมไม่ได้ ติดตรงไหน" instead of just saying
+ * "failed, try later". */
+function explainBookImportAudioFailure(reason: string): string {
+  if (/timed out/i.test(reason)) {
+    return `การสร้างเสียงใช้เวลานานเกินไป (เกิน ${Math.round(BOOK_IMPORT_AUDIO_TIMEOUT_MS / 60_000)} นาที) เซิร์ฟเวอร์จึงยกเลิกงานนี้ - มักเกิดตอนเซิร์ฟเวอร์ (แผนฟรีบน Render) กำลังโหลดโมเดลเสียงหรือมีงานอื่นค้างอยู่`;
+  }
+  return `เกิดข้อผิดพลาดระหว่างสร้างเสียง: ${reason}`;
 }
 
 router.post("/import/book", uploadImages.array("images", 12), async (req, res) => {
@@ -1509,21 +1530,26 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
     bookImportAudioJobs.set(audioJobId, { status: "pending" });
     setTimeout(() => bookImportAudioJobs.delete(audioJobId), BOOK_IMPORT_AUDIO_JOB_TTL_MS).unref();
     generateBookImportAudio(content, questions, instructionText)
-      .then((audio) => {
+      .then(({ result: audio, error }) => {
         // Only overwrite if the TTL cleanup above hasn't already deleted this
         // job (i.e. nobody's polling for it anymore) - no point keeping a
         // finished result around past its own job's cleanup timer.
-        if (bookImportAudioJobs.has(audioJobId)) bookImportAudioJobs.set(audioJobId, { status: "done", audio });
+        if (!bookImportAudioJobs.has(audioJobId)) return;
+        if (error) {
+          bookImportAudioJobs.set(audioJobId, { status: "failed", reason: explainBookImportAudioFailure(error) });
+        } else {
+          bookImportAudioJobs.set(audioJobId, { status: "done", audio });
+        }
       })
       .catch((err) => {
-        console.error("Book import (OCR): background audio pregeneration failed (non-fatal):", err?.message ?? err);
+        // generateBookImportAudio catches its own errors internally and
+        // should never actually reject - this is just a safety net for a
+        // truly unexpected synchronous throw.
+        console.error("Book import (OCR): background audio pregeneration failed unexpectedly:", err?.message ?? err);
         if (bookImportAudioJobs.has(audioJobId)) {
           bookImportAudioJobs.set(audioJobId, {
-            status: "done",
-            audio: {
-              audioUrl: null, articleAudioUrl: null, questionsAudioUrl: null,
-              choicesAudioUrl: null, instructionAudioUrl: null, questionAudioUrls: null,
-            },
+            status: "failed",
+            reason: explainBookImportAudioFailure(err?.message ?? String(err)),
           });
         }
       });
@@ -1555,19 +1581,21 @@ router.post("/import/book", uploadImages.array("images", 12), async (req, res) =
 // GET /api/reading/import/book/audio/:jobId - polled by ImportBookWizard's
 // "AI is Processing" step after /import/book responds, until the background
 // audio job (see bookImportAudioJobs above) finishes. { status: "pending" }
-// while still running; { status: "done", ...audio } once finished (audio
-// fields may still be all-null if generation genuinely failed/timed out -
-// that's a normal "done", not an error, the wizard just shows its existing
-// "will generate on first listen instead" notice in that case). 404 once a
-// job is no longer tracked (already consumed by an earlier poll, or expired
-// via the TTL cleanup - e.g. the wizard tab was closed mid-import).
+// while still running; { status: "done", ...audio } once finished; or
+// { status: "failed", reason } if generateBookImportAudio itself threw (TTS
+// error or its own safety-cap timeout) - reason is a learner-facing Thai
+// explanation (see explainBookImportAudioFailure) so the wizard can show
+// WHY instead of a generic notice. 404 { status: "not_found" } once a job is
+// no longer tracked (already consumed by an earlier poll, or expired via the
+// TTL cleanup - e.g. the wizard tab was closed mid-import).
 router.get("/import/book/audio/:jobId", (req, res) => {
   const job = bookImportAudioJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ status: "not_found" });
   if (job.status === "pending") return res.json({ status: "pending" });
-  // One-shot: the wizard only ever needs to see a "done" job once, so free
-  // it immediately rather than waiting for the TTL sweep.
+  // One-shot: the wizard only ever needs to see a "done"/"failed" job once,
+  // so free it immediately rather than waiting for the TTL sweep.
   bookImportAudioJobs.delete(req.params.jobId);
+  if (job.status === "failed") return res.json({ status: "failed", reason: job.reason });
   res.json({ status: "done", ...job.audio });
 });
 
