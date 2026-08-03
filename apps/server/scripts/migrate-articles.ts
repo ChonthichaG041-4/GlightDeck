@@ -117,7 +117,12 @@ async function main() {
   try {
     const sourceUser = await src.user.findUnique({ where: { email: args.sourceEmail } });
     if (!sourceUser) {
-      console.error(`No user with email "${args.sourceEmail}" found in the source database.`);
+      console.error(
+        `No user with email "${args.sourceEmail}" found in the source database. If you're sure you've signed ` +
+          `into this environment before, your User row may still have a placeholder email (a bug in older ` +
+          `versions of middleware/auth.ts - see scripts/backfill-user-emails.ts) - run ` +
+          `"npx tsx scripts/backfill-user-emails.ts --database-url <this source's DATABASE_URL>" first, then retry.`
+      );
       process.exit(1);
     }
     const targetUser = await dst.user.findUnique({ where: { email: args.targetEmail } });

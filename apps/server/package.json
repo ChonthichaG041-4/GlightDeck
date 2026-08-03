@@ -14,7 +14,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "db:import-kaikki": "tsx scripts/import-kaikki.ts",
-    "db:migrate-articles": "tsx scripts/migrate-articles.ts"
+    "db:migrate-articles": "tsx scripts/migrate-articles.ts",
+    "db:backfill-user-emails": "tsx scripts/backfill-user-emails.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
