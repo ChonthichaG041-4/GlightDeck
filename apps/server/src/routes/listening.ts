@@ -344,11 +344,12 @@ router.post("/generate-exercise", async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/listening/audio - { text, language, accent?, gender?, speed? }
-// Generates (or reuses a cached) MP3 for the given text and returns a URL
-// under /audio-cache. Powers every audio surface in Listening (Workspace
-// playback, per-question "listen" buttons, Preview) - see AudioService for
-// the actual provider dispatch (Kokoro for English, Edge Neural TTS for
-// everything else). No paid TTS API involved anywhere in this pipeline.
+// Generates (or reuses a cached) MP3 for the given text and returns a
+// Supabase Storage URL (see tts/services/AudioCache.ts). Powers every audio
+// surface in Listening (Workspace playback, per-question "listen" buttons,
+// Preview) - see AudioService for the actual provider dispatch (Kokoro for
+// English, Edge Neural TTS for everything else). No paid TTS API involved
+// anywhere in this pipeline.
 // ---------------------------------------------------------------------------
 
 const generateAudioInput = z.object({

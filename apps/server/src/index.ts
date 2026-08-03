@@ -5,7 +5,6 @@ import morgan from "morgan";
 import { withClerk } from "./middleware/auth";
 import apiRouter from "./routes";
 import { errorHandler, notFound } from "./middleware/errorHandler";
-import { AUDIO_CACHE_URL_PREFIX, getCacheDir } from "./tts/services/AudioCache";
 import { warmUpKokoro } from "./tts/providers/KokoroProvider";
 
 // Without these, a truly uncaught exception or unhandled promise rejection
@@ -56,12 +55,11 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-// Generated Listening audio (Kokoro/Edge TTS output) - served unauthenticated
-// on purpose: <audio> tags can't attach a Clerk bearer token, and filenames
-// are opaque sha256 cache keys (see tts/services/AudioCache.ts), not
-// sequential/guessable ids. Mounted before withClerk so playback never hits
-// the auth middleware at all.
-app.use(AUDIO_CACHE_URL_PREFIX, express.static(getCacheDir()));
+// Generated Listening audio (Kokoro/Edge TTS output) used to be served here
+// from local disk - see tts/services/AudioCache.ts for why that moved to
+// Supabase Storage (public bucket, so URLs it returns are directly playable
+// with no auth/proxy step, same "no Clerk bearer token on <audio> tags"
+// reasoning as before - just served by Supabase now instead of this route).
 
 app.use(withClerk);
 

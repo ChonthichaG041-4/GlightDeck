@@ -270,7 +270,7 @@ export interface GenerateAudioParams {
 }
 
 export interface GenerateAudioResult {
-  /** Relative path (e.g. "/audio-cache/<hash>.mp3") - prepend getServerOrigin() from api/client.ts before using as an <audio src>. */
+  /** Absolute Supabase Storage URL - pass through resolveAudioUrl() from api/client.ts before using as an <audio src> (handles any legacy relative URL still on old rows). */
   url: string;
   cached: boolean;
   provider: "kokoro" | "edge";
@@ -910,12 +910,112 @@ export interface ImportedBookDocument extends ImportedDocument {
   questionAudioUrls?: (string | null)[] | null;
 }
 
+// Thrown by pollBookImportOcr for a server-confirmed failure/not-found, or a
+// client-side poll timeout - distinguishable from a plain axios error (which
+// has no useful .message for the learner) so ImportBookWizard's catch block
+// can show this error's .message as-is instead of a generic fallback.
+export class BookImportFailedError extends Error {}
+
+interface BookImportOcrStatus {
+  status: "pending" | "done" | "not_found" | "failed";
+  reason?: string;
+  title?: string;
+  level?: string | null;
+  instruction?: string | null;
+  confidence?: number | null;
+  pagesProcessed?: number;
+  blocks?: Block[];
+  content?: string;
+  questions?: ReadingQuestion[];
+  audioJobId?: string | null;
+}
+
+async function fetchBookImportOcrStatus(jobId: string): Promise<BookImportOcrStatus> {
+  try {
+    return (await api.get<BookImportOcrStatus>(`/reading/import/book/status/${jobId}`)).data;
+  } catch (err: any) {
+    // See fetchBookImportAudioStatus below for why a 404 must be treated as
+    // the server's definitive answer, not a retryable network failure.
+    if (err?.response?.status === 404 && err.response.data) {
+      return err.response.data as BookImportOcrStatus;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Polls GET /reading/import/book/status/:jobId until the background OCR job
+ * started by POST /import/book finishes. The OCR/vision call (with its own
+ * retries against a free, sometimes-overloaded model) could otherwise run
+ * long enough to exceed Render's reverse-proxy timeout and 502 before the
+ * request ever got a response - so /import/book now only ever kicks the job
+ * off and returns an importJobId immediately; this is what actually waits
+ * for the result. Network hiccups mid-poll are retried, not treated as
+ * failure (same reasoning as pollBookImportAudio below).
+ *
+ * Throws BookImportFailedError (never a generic axios error) on a
+ * server-confirmed failure/not-found or on timeout, with a learner-facing
+ * Thai .message - ImportBookWizard's catch block surfaces this directly.
+ */
+async function pollBookImportOcr(
+  jobId: string,
+  maxWaitMs = 270_000,
+  intervalMs = 2000
+): Promise<ImportedBookDocument> {
+  const deadline = Date.now() + maxWaitMs;
+  let lastNetworkError: string | null = null;
+  while (Date.now() < deadline) {
+    let status: BookImportOcrStatus | null = null;
+    try {
+      status = await fetchBookImportOcrStatus(jobId);
+    } catch (err: any) {
+      lastNetworkError = err?.message ?? String(err);
+    }
+    if (status) {
+      if (status.status === "done") {
+        return {
+          title: status.title ?? "",
+          blocks: status.blocks ?? [],
+          content: status.content ?? "",
+          level: status.level ?? null,
+          instruction: status.instruction ?? null,
+          confidence: status.confidence ?? null,
+          pagesProcessed: status.pagesProcessed ?? 0,
+          questions: status.questions ?? [],
+          audioJobId: status.audioJobId ?? null,
+          audioUrl: null,
+          articleAudioUrl: null,
+          questionsAudioUrl: null,
+          choicesAudioUrl: null,
+          instructionAudioUrl: null,
+          questionAudioUrls: null,
+        };
+      }
+      if (status.status === "failed" || status.status === "not_found") {
+        throw new BookImportFailedError(status.reason ?? "นำเข้าภาพไม่สำเร็จ ลองใหม่อีกครั้ง");
+      }
+      // "pending" - fall through and poll again.
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new BookImportFailedError(
+    lastNetworkError
+      ? `หมดเวลารอผลการนำเข้า (การเชื่อมต่อกับเซิร์ฟเวอร์ไม่เสถียรระหว่างรอผลลัพธ์: ${lastNetworkError})`
+      : `หมดเวลารอผลการนำเข้า (เกิน ${Math.round(maxWaitMs / 60_000)} นาที) กรุณาลองใหม่อีกครั้ง`
+  );
+}
+
 export function useImportBook() {
   return useMutation({
-    mutationFn: async (files: File[]) => {
+    mutationFn: async (files: File[]): Promise<ImportedBookDocument> => {
       const form = new FormData();
       files.forEach((f) => form.append("images", f));
-      return (await api.post<ImportedBookDocument>("/reading/import/book", form, { headers: { "Content-Type": "multipart/form-data" } })).data;
+      const { importJobId } = (
+        await api.post<{ importJobId: string }>("/reading/import/book", form, {
+          headers: { "Content-Type": "multipart/form-data" },
+        })
+      ).data;
+      return pollBookImportOcr(importJobId);
     },
   });
 }

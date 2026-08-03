@@ -51,7 +51,7 @@ export async function generate(request: GenerateAudioRequest): Promise<GenerateA
   const normalizedFullText = chunks.join(" ");
   const key = cacheKeyFor({ provider: providerName, voice, speed, text: normalizedFullText });
 
-  if (hasCached(key)) {
+  if (await hasCached(key)) {
     return { url: publicUrlFor(key), cached: true, provider: providerName, language, speed };
   }
 

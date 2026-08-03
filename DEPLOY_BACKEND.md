@@ -57,6 +57,9 @@ Still in that service, go to **Variables** and add:
 | `ANTHROPIC_API_KEY` | if used elsewhere in the server |
 | `CLIENT_ORIGIN` | your Vercel frontend URL, e.g. `https://your-app.vercel.app` (no trailing slash) |
 | `NODE_ENV` | `production` |
+| `SUPABASE_URL` | your Supabase project URL, e.g. `https://<project-ref>.supabase.co` — required for Listening audio (see `apps/server/src/tts/services/AudioCache.ts`); use the SAME project as your local `.env` if you want audio generated locally (e.g. via Import Reading from Images run on your own machine) to already work once you migrate the article row over |
+| `SUPABASE_SERVICE_ROLE_KEY` | the **service_role** key (Settings → API), not the anon key |
+| `SUPABASE_AUDIO_BUCKET` | optional — defaults to `audio-cache`; must be a **public** Storage bucket you created in the Supabase dashboard |
 
 Railway sets `PORT` automatically — you don't need to add it.
 
@@ -108,6 +111,9 @@ In the web service's **Environment** tab, add:
 | `ANTHROPIC_API_KEY` | if used elsewhere in the server |
 | `CLIENT_ORIGIN` | your Vercel frontend URL, e.g. `https://your-app.vercel.app` |
 | `NODE_ENV` | `production` |
+| `SUPABASE_URL` | your Supabase project URL, e.g. `https://<project-ref>.supabase.co` — required for Listening audio (see `apps/server/src/tts/services/AudioCache.ts`); use the SAME project as your local `.env` if you want audio generated locally (e.g. via Import Reading from Images run on your own machine, to dodge Render free tier's 512MB RAM limit) to already work once you migrate the article row over with `scripts/migrate-articles.ts` |
+| `SUPABASE_SERVICE_ROLE_KEY` | the **service_role** key (Settings → API), not the anon key |
+| `SUPABASE_AUDIO_BUCKET` | optional — defaults to `audio-cache`; must be a **public** Storage bucket you created in the Supabase dashboard |
 
 Render sets `PORT` automatically.
 

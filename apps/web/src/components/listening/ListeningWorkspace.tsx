@@ -42,7 +42,7 @@ import {
   useGenerateAudio, useCreateHighlight, useDeleteHighlight, useCreateNote, useUpdateNote,
   type ReadingQuestion, type HighlightItem,
 } from "@/api/hooks";
-import { getServerOrigin } from "@/api/client";
+import { resolveAudioUrl } from "@/api/client";
 import { ALLOWED_SPEEDS, DEFAULT_SPEED, type Accent, type VoiceGender, type TTSSpeed } from "@/lib/ttsLanguages";
 import { cn } from "@/lib/utils";
 
@@ -439,7 +439,7 @@ export default function ListeningWorkspace({
     const requestId = ++playRequestIdRef.current;
     setPlayState("loading");
     setActiveTrack(track);
-    audio.src = `${getServerOrigin()}${url}`;
+    audio.src = resolveAudioUrl(url);
     audio.play().catch(() => {
       if (playRequestIdRef.current === requestId) setPlayState("idle");
     });
@@ -457,7 +457,7 @@ export default function ListeningWorkspace({
           if (playRequestIdRef.current !== requestId) return; // superseded - a newer play request already took over
           const audio = audioRef.current;
           if (!audio) return;
-          audio.src = `${getServerOrigin()}${res.url}`;
+          audio.src = resolveAudioUrl(res.url);
           audio.play().catch(() => setPlayState("idle"));
         },
         onError: () => {
@@ -610,7 +610,7 @@ export default function ListeningWorkspace({
       audio.addEventListener("ended", done);
       audio.addEventListener("error", done);
       setPlayState("loading");
-      audio.src = `${getServerOrigin()}${url}`;
+      audio.src = resolveAudioUrl(url);
       audio.play().catch(done);
     });
   }

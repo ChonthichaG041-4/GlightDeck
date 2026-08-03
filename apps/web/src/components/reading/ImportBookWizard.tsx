@@ -28,8 +28,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import QuestionBuilder from "./QuestionBuilder";
-import { useImportBook, useCreatePassage, useUpdatePassage, pollBookImportAudio, type ImportedBookDocument, type ReadingQuestion } from "@/api/hooks";
-import { getServerOrigin } from "@/api/client";
+import { useImportBook, useCreatePassage, useUpdatePassage, pollBookImportAudio, BookImportFailedError, type ImportedBookDocument, type ReadingQuestion } from "@/api/hooks";
+import { resolveAudioUrl } from "@/api/client";
 import { playSuccessChime } from "@/lib/notificationSound";
 
 type Step = "upload" | "review-pages" | "processing" | "review-results" | "save";
@@ -259,7 +259,25 @@ export default function ImportBookWizard({
       setTimeout(() => setStep("review-results"), 400);
     } catch (err: any) {
       clearInterval(timer);
-      setProcessError(err?.response?.data?.error ?? "นำเข้าภาพไม่สำเร็จ ลองใหม่อีกครั้ง");
+      // BookImportFailedError (thrown by pollBookImportOcr - a server-
+      // confirmed OCR failure, or the poll itself timing out) already
+      // carries a specific, learner-facing Thai message in .message; a
+      // plain axios error with a JSON body (e.g. the initial upload request
+      // failing validation) carries it in .response.data.error instead. If
+      // neither is present, this is a raw network/proxy-level failure on the
+      // very first upload request itself (no JSON body at all - e.g. a
+      // Render free-tier cold-start/redeploy-transition 502) - still surface
+      // whatever axios' own .message says (status code, "Network Error",
+      // etc.) instead of a fully generic message, so a report of this error
+      // is actually diagnosable without a follow-up round trip.
+      const technicalHint = err?.response?.status
+        ? `HTTP ${err.response.status}${err?.code ? ` / ${err.code}` : ""}`
+        : err?.message;
+      setProcessError(
+        err?.response?.data?.error ??
+          (err instanceof BookImportFailedError ? err.message : undefined) ??
+          (technicalHint ? `นำเข้าภาพไม่สำเร็จ ลองใหม่อีกครั้ง (${technicalHint})` : "นำเข้าภาพไม่สำเร็จ ลองใหม่อีกครั้ง")
+      );
       setStep("review-pages");
     }
   }
@@ -852,7 +870,7 @@ function AudioPreview({ audio, failReason }: { audio: SaveStepAudio; failReason:
       el.pause();
       return;
     }
-    el.src = `${getServerOrigin()}${url}`;
+    el.src = resolveAudioUrl(url);
     el.play();
     setPlayingKey(key);
   }

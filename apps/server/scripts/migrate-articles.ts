@@ -26,12 +26,19 @@
 //     personal, session-specific annotations tied to a particular user in a
 //     particular environment; copying them across would be meaningless (and
 //     the target user has no local highlights to preserve/merge anyway).
-//   - Never copies the pre-generated Listening audio URLs (audioUrl,
-//     articleAudioUrl, questionsAudioUrl, choicesAudioUrl,
-//     instructionAudioUrl, questionAudioUrls) - those point at MP3 files
-//     cached on the *source* server's disk, which don't exist on the
-//     target's disk. Left null so the target just regenerates them on first
-//     Listening play, exactly like any other never-cached article.
+//
+// Pre-generated Listening audio URLs (audioUrl, articleAudioUrl,
+// questionsAudioUrl, choicesAudioUrl, instructionAudioUrl,
+// questionAudioUrls) ARE copied now - they used to be skipped because they
+// pointed at MP3 files on the *source* server's local disk, which the target
+// couldn't reach. Now that AudioCache.ts stores audio in Supabase Storage
+// (see that file's header comment) instead of local disk, those URLs are
+// already-working, absolute, publicly-reachable links - copying the text of
+// the URL is enough, no file transfer needed. This ONLY works if source and
+// target are pointed at the SAME Supabase Storage project/bucket (i.e. your
+// local apps/server/.env's SUPABASE_URL matches production's) - if they're
+// different projects, the copied URLs will 404 on the target and you should
+// run with the audio fields stripped out or leave SUPABASE_URL unset.
 //
 // Options:
 //   --source <url>       source DATABASE_URL (default: process.env.DATABASE_URL,
@@ -76,13 +83,15 @@ function parseArgs(argv: string[]): Args {
 }
 
 // Fields that are meaningful to carry over as-is. Explicitly excludes id,
-// userId, viewCount (resets to 0 - organic per-environment stat) and every
-// pre-generated audio URL field (see header comment).
+// userId, and viewCount (resets to 0 - organic per-environment stat).
 const COPY_FIELDS = [
   "title", "category", "content", "source", "createdAt",
   "translation", "questionsJson", "examMode", "cefrLevel", "testMode",
   "visibility", "status",
   "description", "tags", "contentSource", "blocksJson", "vocabularyMode", "vocabularyJson",
+  // Supabase Storage URLs - see header comment for why these are safe to
+  // copy as-is now (source and target must share the same Storage project).
+  "audioUrl", "articleAudioUrl", "questionsAudioUrl", "choicesAudioUrl", "instructionAudioUrl", "questionAudioUrls",
 ] as const;
 
 async function main() {
@@ -161,8 +170,10 @@ async function main() {
     console.log(`\nDone. ${copied} ${args.dryRun ? "would be copied" : "copied"}, ${skipped} skipped (already existed).`);
     if (!args.dryRun && copied) {
       console.log(
-        "Note: Listening audio for these articles will regenerate on first play on the target " +
-          "(pre-generated audio URLs were intentionally not copied - see script header)."
+        "Note: pre-generated audio URLs were copied as-is (see script header) - they'll only actually " +
+          "play on the target if --source and --target share the same Supabase Storage project. If not, " +
+          "or if an article had no pre-generated audio to begin with, Listening just regenerates on first play, " +
+          "same as any other article."
       );
     }
   } finally {
