@@ -1,5 +1,13 @@
 import crypto from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+// supabase-js always spins up a Realtime sub-client internally, even though
+// this file only ever touches .storage - on Node < 22 (no built-in global
+// WebSocket) that throws "Node.js 20 detected without native WebSocket
+// support" the first time the client is used. Passing the "ws" package as
+// the transport (Supabase's own suggested fix) sidesteps it regardless of
+// which Node version this ends up running on (Render's Node version, or
+// whatever's on your own machine for local dev).
+import ws from "ws";
 
 // ============================================================================
 // Supabase Storage-backed audio cache. Cache key = provider + voice + speed +
@@ -31,13 +39,19 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 // defeat the point.
 // ============================================================================
 
-const BUCKET = process.env.SUPABASE_AUDIO_BUCKET || "audio-cache";
+const BUCKET = (process.env.SUPABASE_AUDIO_BUCKET || "audio-cache").trim();
 
 let cachedClient: SupabaseClient | null = null;
 function getClient(): SupabaseClient {
   if (cachedClient) return cachedClient;
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // A trailing slash on SUPABASE_URL (an easy copy-paste artifact from the
+  // Supabase dashboard) makes storage-js build request URLs with a doubled
+  // slash before "storage/v1/...", which the Storage API rejects with a
+  // generic "Invalid path specified in request URL" - stripped defensively
+  // here so that one extra character copied along with the URL can't cause
+  // every single audio generation to fail.
+  const url = process.env.SUPABASE_URL?.trim().replace(/\/+$/, "");
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
   if (!url || !key) {
     throw new Error(
       "Audio generation requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to be set (apps/server/.env) - " +
@@ -45,7 +59,7 @@ function getClient(): SupabaseClient {
         `named "${BUCKET}" exists (Storage -> New bucket in the dashboard) before generating any audio.`
     );
   }
-  cachedClient = createClient(url, key);
+  cachedClient = createClient(url, key, { realtime: { transport: ws as any } });
   return cachedClient;
 }
 

@@ -432,17 +432,33 @@ export default function ListeningWorkspace({
   // applied if no newer play request has started since.
   const playRequestIdRef = useRef(0);
 
-  /** Plays an already-generated MP3 URL directly - no /listening/audio round trip. Used for the OCR import wizard's pre-generated tracks (see Article.audioUrl/articleAudioUrl/questionsAudioUrl/choicesAudioUrl). */
-  function playStoredUrl(url: string, track: TrackKey = null) {
+  /**
+   * Plays an already-generated MP3 URL directly - no /listening/audio round
+   * trip. Used for the OCR import wizard's pre-generated tracks (see
+   * Article.audioUrl/articleAudioUrl/questionsAudioUrl/choicesAudioUrl).
+   *
+   * `fallbackText`, if given, is what to live-generate instead if `url`
+   * fails to load - a pregenerated URL can go stale (e.g. an article
+   * imported before this app moved from local-disk audio caching to
+   * Supabase Storage, or an article migrated in from an environment with a
+   * different Storage project - see scripts/migrate-articles.ts) and
+   * without this, playback would just silently do nothing.
+   */
+  function playStoredUrl(url: string, track: TrackKey = null, fallbackText?: string) {
     const audio = audioRef.current;
     if (!audio) return;
     const requestId = ++playRequestIdRef.current;
     setPlayState("loading");
     setActiveTrack(track);
+    const onLoadError = () => {
+      audio.removeEventListener("error", onLoadError);
+      if (playRequestIdRef.current !== requestId) return; // superseded - a newer play request already took over
+      if (fallbackText) playText(fallbackText, speed === DEFAULT_SPEED ? undefined : speed, track);
+      else setPlayState("idle");
+    };
+    audio.addEventListener("error", onLoadError, { once: true });
     audio.src = resolveAudioUrl(url);
-    audio.play().catch(() => {
-      if (playRequestIdRef.current === requestId) setPlayState("idle");
-    });
+    audio.play().catch(onLoadError);
   }
 
   /** Fetches (or reuses cached) MP3 for `text` at the current language/accent/gender/speed and plays it through the shared hidden <audio> element. */
@@ -474,7 +490,7 @@ export default function ListeningWorkspace({
   // falls back to live generation exactly as before.
   function playFromStart(track: TrackKey = "ARTICLE") {
     if (speed === DEFAULT_SPEED && saved?.articleAudioUrl) {
-      playStoredUrl(saved.articleAudioUrl, track);
+      playStoredUrl(saved.articleAudioUrl, track, transcript);
       return;
     }
     playText(transcript, undefined, track);
@@ -499,7 +515,7 @@ export default function ListeningWorkspace({
       // speed, same rule as the Article's own fast path.
       const storedUrl = speed === DEFAULT_SPEED ? saved?.questionAudioUrls?.[currentQ] : null;
       if (storedUrl) {
-        playStoredUrl(storedUrl, "QUESTION_OPTIONS");
+        playStoredUrl(storedUrl, "QUESTION_OPTIONS", buildQuestionOptionsText(q));
         return;
       }
       playText(buildQuestionOptionsText(q), undefined, "QUESTION_OPTIONS");
@@ -536,11 +552,11 @@ export default function ListeningWorkspace({
       const q = questions?.[currentQ];
       if (!q) return;
       const storedUrl = next === DEFAULT_SPEED ? saved?.questionAudioUrls?.[currentQ] : null;
-      if (storedUrl) playStoredUrl(storedUrl, "QUESTION_OPTIONS");
+      if (storedUrl) playStoredUrl(storedUrl, "QUESTION_OPTIONS", buildQuestionOptionsText(q));
       else playText(buildQuestionOptionsText(q), next, "QUESTION_OPTIONS");
       return;
     }
-    if (next === DEFAULT_SPEED && saved?.articleAudioUrl) playStoredUrl(saved.articleAudioUrl, activeTrack ?? "ARTICLE");
+    if (next === DEFAULT_SPEED && saved?.articleAudioUrl) playStoredUrl(saved.articleAudioUrl, activeTrack ?? "ARTICLE", transcript);
     else playText(transcript, next, activeTrack ?? "ARTICLE");
   }
 
@@ -598,20 +614,38 @@ export default function ListeningWorkspace({
     countdownSkipRef.current?.();
   }
 
-  function playUrlAndWait(url: string): Promise<void> {
+  /**
+   * `fallbackText`, if given, is what to live-generate+await instead if
+   * `url` fails to load - see playStoredUrl's comment for why a
+   * pregenerated URL can go stale. Without this, Auto pacing mode would
+   * just silently skip that segment (resolve immediately with no sound)
+   * instead of falling back, the same bug playStoredUrl had.
+   */
+  function playUrlAndWait(url: string, fallbackText?: string): Promise<void> {
     return new Promise((resolve) => {
       const audio = audioRef.current;
       if (!audio) return resolve();
+      let settled = false;
       const done = () => {
+        if (settled) return;
+        settled = true;
         audio.removeEventListener("ended", done);
-        audio.removeEventListener("error", done);
+        audio.removeEventListener("error", onError);
         resolve();
       };
+      const onError = () => {
+        if (settled) return;
+        settled = true;
+        audio.removeEventListener("ended", done);
+        audio.removeEventListener("error", onError);
+        if (fallbackText) playTextAndWait(fallbackText).then(resolve);
+        else resolve();
+      };
       audio.addEventListener("ended", done);
-      audio.addEventListener("error", done);
+      audio.addEventListener("error", onError);
       setPlayState("loading");
       audio.src = resolveAudioUrl(url);
-      audio.play().catch(done);
+      audio.play().catch(onError);
     });
   }
 
@@ -625,7 +659,7 @@ export default function ListeningWorkspace({
   }
 
   async function playArticleAndWait(): Promise<void> {
-    if (speed === DEFAULT_SPEED && saved?.articleAudioUrl) await playUrlAndWait(saved.articleAudioUrl);
+    if (speed === DEFAULT_SPEED && saved?.articleAudioUrl) await playUrlAndWait(saved.articleAudioUrl, transcript);
     else await playTextAndWait(transcript);
   }
 
@@ -636,7 +670,7 @@ export default function ListeningWorkspace({
 
   /** Auto flow's Instruction step - same pregenerated-fast-path/live-fallback pattern as playArticleAndWait, using Article.instructionAudioUrl. */
   async function playInstructionAndWait(): Promise<void> {
-    if (speed === DEFAULT_SPEED && saved?.instructionAudioUrl) await playUrlAndWait(saved.instructionAudioUrl);
+    if (speed === DEFAULT_SPEED && saved?.instructionAudioUrl) await playUrlAndWait(saved.instructionAudioUrl, instructionText());
     else await playTextAndWait(instructionText());
   }
 
